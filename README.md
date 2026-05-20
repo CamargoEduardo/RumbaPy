@@ -2,7 +2,7 @@
 
 Biblioteca Python para automação de terminais IBM/RUMBA via EHLAPI.
 
-Author: Eduardo Camargo da Silva
+Author: Eduardo Camargo da Silva  
 GitHub: https://github.com/littleplankton
 
 O projeto fornece uma interface de alto nível para automação de sistemas legados acessados por terminais RUMBA, utilizando comunicação entre processos Python 64-bit e Python 32-bit.
@@ -45,11 +45,7 @@ RumbaPy/
 │     ├─ client.py
 │     ├─ server.py
 │     ├─ api.py
-│     ├─ config.py
-│     └─ exceptions.py
-│
-├─ examples/
-│  └─ basic_cics.py
+│     └─ config.py
 │
 ├─ pyproject.toml
 ├─ config.example.ini
