@@ -1,8 +1,3 @@
-# -----------------------------------------------------------------------------------
-# Author: Eduardo Camargo da Silva
-# Created: November 2024
-# -----------------------------------------------------------------------------------
-
 from typing import Tuple, Any, Callable
 from win32com.client import Dispatch
 from dataclasses import dataclass
@@ -16,7 +11,8 @@ import platform
 import logging
 import ctypes
 import time
-import os
+
+logger = logging.getLogger(__name__)
 
 ERROR_CODES = {
     "WD_ConnectPS": {
@@ -133,26 +129,6 @@ class RumbaConfig:
     window_width: int = 925
     timeout: int = 120
 
-def setup_logging(script_path: str) -> logging.Logger:
-    logs_dir = os.path.join(script_path, '..', '..', 'logs')
-    os.makedirs(logs_dir, exist_ok=True)
-    log_path = os.path.join(logs_dir, "rumba_api.log")
-
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.DEBUG)
-
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-
-    file_handler = logging.FileHandler(log_path)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-
-    return logger
-
 def timeout(seconds: int = RumbaConfig.timeout) -> Callable:
     def decorator(func: Callable) -> Callable:
         @wraps(func)
@@ -182,7 +158,6 @@ def timeout(seconds: int = RumbaConfig.timeout) -> Callable:
 class RumbaAPI:
     def __init__(self, gs_short_name_ims: str):
         self.config = RumbaConfig()
-        self.logger = setup_logging(os.path.dirname(os.path.abspath(__file__)))
         self.wd_dll = self.load_dll()
         self.rumba_hwnd = 1
         self.gs_short_name_ims = gs_short_name_ims

@@ -1,20 +1,15 @@
 """
 Cliente que se comunica com o servidor Rumba persistente.
 """
-from app.config import config as cf
 from typing import Any, Literal
-from pathlib import Path
+
+from . import config as cf
+
 import subprocess
+import logging
 import socket
 import time
 import json
-import os
-
-log = cf.Logger('rumba_client', Path('logs'))
-config = cf.Config()
-
-python_32bit = config.paths.python_32bit
-server_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "rumba_server.py"))
 
 Mnemonic = Literal[
     "ENTER", "TAB", "BACKSPACE", "BACKTAB", "CLEAR", "DOWN", "LEFT", "RIGHT",
@@ -23,9 +18,15 @@ Mnemonic = Literal[
     "INSERT"
 ]
 
+logger = logging.getLogger(__name__)
+
 class RumbaClient:
-    def __init__(self, terminal_type: str):
+    def __init__(self, terminal_type: str, config_path: str = "config.ini"):
         self.terminal_type = terminal_type
+        self.config = cf.Config(config_path)
+
+        self.python_32bit = self.config.paths.python_32bit
+
         self.session_id = f"{terminal_type}_{int(time.time())}"
         self.HOST = 'localhost'
 
@@ -41,15 +42,15 @@ class RumbaClient:
             # Tenta conectar ao servidor para verificar se está rodando
             result = self._send_command('ping')
             if result.get('success', False):
-                log.debug("Conectado ao servidor Rumba existente")
+                logger.debug("Conectado ao servidor Rumba existente")
                 return
         except Exception:
-            log.debug("Servidor Rumba não está em execução, iniciando...")
+            logger.debug("Servidor Rumba não está em execução, iniciando...")
 
         # Se chegou aqui, precisa iniciar o servidor
-        log.debug(f"Iniciando servidor Rumba usando Python 32-bit: {python_32bit}")
+        logger.debug(f"Iniciando servidor Rumba usando Python 32-bit: {self.python_32bit}")
         subprocess.Popen(
-            [python_32bit, server_script, f"--terminal_type={self.terminal_type}"],
+            [self.python_32bit, "-m", "rumbapy.server", f"--terminal_type={self.terminal_type}"],
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
@@ -59,7 +60,7 @@ class RumbaClient:
         for _ in range(30):
             try:
                 if self._send_command('ping').get('success'):
-                    log.debug("Servidor Rumba iniciado com sucesso.")
+                    logger.debug("Servidor Rumba iniciado com sucesso.")
                     return
             except:
                 pass

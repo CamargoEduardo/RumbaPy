@@ -3,28 +3,21 @@ Servidor persistente para o Rumba que mantém sessões ativas.
 Este script deve ser executado como processo Python 32-bit.
 """
 from typing import Dict, Any
-from pathlib import Path
+
+from .api import RumbaAPI, ERROR_CODES
+from . import config as cf
 
 import traceback
 import threading
 import argparse
+import logging
 import socket
 import time
 import json
-import sys
-import os
-
-# Configurar caminhos para importações
-script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.abspath(os.path.join(script_dir, '..', '..'))
-sys.path.insert(0, project_root)
-
-from app.src.rumba_api import RumbaAPI, ERROR_CODES
-from app.config import config as cf
-
 
 config = cf.Config()
-log = cf.Logger('rumba_server', Path(os.path.join('..', '..', 'logs')))
+
+logger = logging.getLogger(__name__)
 
 # Sessions gerenciadas pelo servidor
 sessions: dict[str, RumbaAPI] = {}
@@ -42,7 +35,7 @@ def screen_load(rumba: RumbaAPI,
                 text: str,
                 text_diff: bool = False) -> Dict[str, Any]:
     """Aguarda até que um texto específico apareça na tela"""
-    log.debug(f"Aguardando texto '{text}' na posição y={y}, x={x}")
+    logger.debug(f"Aguardando texto '{text}' na posição y={y}, x={x}")
 
     for i in range(120):  # 2 minutos de timeout
         try:
@@ -53,37 +46,38 @@ def screen_load(rumba: RumbaAPI,
                 return {'success': True}
 
             if i > 0 and i % 15 == 0:
-                log.debug(f"Ainda aguardando texto '{text}', valor atual: '{check}'")
+                logger.debug(f"Ainda aguardando texto '{text}', valor atual: '{check}'")
         except Exception as e:
             error_message = f"Erro na funcao screen_load: {e}"
-            log.error(error_message)
+            logger.error(error_message)
             return {'success': False, 'error': error_message}
 
         time.sleep(1)
 
         if (i % 5 == 0) and is_in_erro_grave(rumba):
             error_message = "CICS apresentou janela de erro grave!"
-            log.error(error_message)
+            logger.error(error_message)
             return {'success': False, 'error': error_message}
 
     error_message = f"Timeout aguardando texto '{text}'"
-    log.error(error_message)
+    logger.error(error_message)
     return {'success': False, 'error': error_message}
 
 def logon_cics(rumba: RumbaAPI) -> Dict[str, Any]:
     """Realiza login no terminal CICS"""
     try:
-        log.debug("Iniciando login no CICS")
+        logger.debug("Iniciando login no CICS")
         rumba.close_terminal()
 
         result = rumba.open_cics()
         if not result:
-            log.error('Falha ao abrir CICS')
+            logger.error('Falha ao abrir CICS')
             return {'success': False, 'error': 'Falha ao abrir CICS'}
 
         for i in range(61):
             result = rumba.wd_connect_ps()
-            if result == 0: break
+            if result == 0:
+                break
             assert i < 60, TimeoutError(
                 'Nao foi possivel estabelecer uma conexao com o terminal RUMBA '
                 f'codigo de erro: {result} - {ERROR_CODES['WD_ConnectPS'][result]}'
@@ -108,32 +102,32 @@ def logon_cics(rumba: RumbaAPI) -> Dict[str, Any]:
         # Verificar senha
         check = rumba.copy_ps_to_string(19, 19, 14)
         if "SENHA EXPIRADA" in check:
-            log.error("Senha do CICS expirada")
+            logger.error("Senha do CICS expirada")
             return {'success': False, 'error': 'SENHA DO CICS ESTÁ EXPIRADA'}
         if "SENHA INVALIDA" in check:
-            log.error("Senha do CICS inválida")
+            logger.error("Senha do CICS inválida")
             return {'success': False, 'error': 'SENHA DO CICS ESTÁ INCORRETA'}
 
         result = screen_load(rumba, 5, 20, "Signon")
         if not result.get('success', False):
             return {'success': False, 'error': result.get('error')}
 
-        log.debug("Login CICS realizado com sucesso")
+        logger.debug("Login CICS realizado com sucesso")
         return {'success': True}
     except Exception as e:
-        log.error(f"Erro durante login: {str(e)}")
-        log.error(traceback.format_exc())
+        logger.error(f"Erro durante login: {str(e)}")
+        logger.error(traceback.format_exc())
         return {'success': False, 'error': str(e)}
 
 def logon_rhelp(rumba: RumbaAPI) -> Dict[str, Any]:
     """Realiza login no terminal RHELP (IMS)"""
     try:
-        log.info("Iniciando login no Rhelp")
+        logger.info("Iniciando login no Rhelp")
         rumba.close_terminal()
 
         result = rumba.open_rhelp()
         if not result:
-            log.error('Falha ao abrir RHELP')
+            logger.error('Falha ao abrir RHELP')
             return {'success': False, 'error': 'Falha ao abrir RHELP'}
 
         rumba.wd_connect_ps()
@@ -160,10 +154,10 @@ def logon_rhelp(rumba: RumbaAPI) -> Dict[str, Any]:
         rumba.copy_string_to_ps(16, 47, "RHELP")
         rumba.wd_send_key("ENTER")
 
-        log.info("Login RHELP realizado com sucesso")
+        logger.info("Login RHELP realizado com sucesso")
         return {'success': True}
     except Exception as e:
-        log.error(f"Erro durante login RHELP: {str(e)}")
+        logger.error(f"Erro durante login RHELP: {str(e)}")
         return {'success': False, 'error': str(e)}
 
 def logon_and_go_to_SCOM_A(rumba: RumbaAPI) -> Dict[str, Any]:
@@ -185,13 +179,13 @@ def logon_and_go_to_SCOM_A(rumba: RumbaAPI) -> Dict[str, Any]:
 
         return {'success': True}
     except Exception as e:
-        log.error(f"Erro na navegação: {str(e)}")
+        logger.error(f"Erro na navegação: {str(e)}")
         return {'success': False, 'error': str(e)}
 
 def logon_and_go_to_SCPE_ALT(rumba: RumbaAPI) -> Dict[str, Any]:
     """Realiza login e navega para a tela SCPE ALT"""
     try:
-        log.info("Navegando para SCPE ALT")
+        logger.info("Navegando para SCPE ALT")
         
         result = logon_cics(rumba)
         if not result.get('success', False):
@@ -211,17 +205,17 @@ def logon_and_go_to_SCPE_ALT(rumba: RumbaAPI) -> Dict[str, Any]:
         if not result.get('success', False):
             return {'success': False, 'error': result.get('error')}
 
-        log.info("Navegação para SCPE ALT concluída")
+        logger.info("Navegação para SCPE ALT concluída")
         return {'success': True}
     except Exception as e:
-        log.error(f"Erro na navegação: {str(e)}")
+        logger.error(f"Erro na navegação: {str(e)}")
         return {'success': False, 'error': str(e)}
 
 def logon_and_go_to_SCPE_INC(rumba: RumbaAPI) -> Dict[str, Any]:
     """Realiza login e navega para a tela SCPE INC"""
     # Similar à função anterior, mudando apenas o código para 'INC'
     try:
-        log.info("Navegando para SCPE INC")
+        logger.info("Navegando para SCPE INC")
         
         result = logon_cics(rumba)
         if not result.get('success', False):
@@ -241,17 +235,17 @@ def logon_and_go_to_SCPE_INC(rumba: RumbaAPI) -> Dict[str, Any]:
         if not result.get('success', False):
             return {'success': False, 'error': result.get('error')}
 
-        log.info("Navegação para SCPE INC concluída")
+        logger.info("Navegação para SCPE INC concluída")
         return {'success': True}
     except Exception as e:
-        log.error(f"Erro na navegação: {str(e)}")
+        logger.error(f"Erro na navegação: {str(e)}")
         return {'success': False, 'error': str(e)}
 
 def logon_and_go_to_SCPE_EXC(rumba: RumbaAPI) -> Dict[str, Any]:
     """Realiza login e navega para a tela SCPE EXC"""
     # Similar às funções anteriores, mudando apenas o código para 'EXC'
     try:
-        log.info("Navegando para SCPE EXC")
+        logger.info("Navegando para SCPE EXC")
         
         result = logon_cics(rumba)
         if not result.get('success', False):
@@ -271,10 +265,10 @@ def logon_and_go_to_SCPE_EXC(rumba: RumbaAPI) -> Dict[str, Any]:
         if not result.get('success', False):
             return {'success': False, 'error': result.get('error')}
 
-        log.info("Navegação para SCPE EXC concluída")
+        logger.info("Navegação para SCPE EXC concluída")
         return {'success': True}
     except Exception as e:
-        log.error(f"Erro na navegação: {str(e)}")
+        logger.error(f"Erro na navegação: {str(e)}")
         return {'success': False, 'error': str(e)}
 
 def execute_command(session_id: str, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -283,12 +277,12 @@ def execute_command(session_id: str, action: str, params: Dict[str, Any]) -> Dic
         # Obter ou criar a sessão
         if session_id not in sessions:
             terminal_type = params.get('terminal_type', 'D')
-            log.info(f"Criando nova sessão {session_id} para terminal {terminal_type}")
+            logger.info(f"Criando nova sessão {session_id} para terminal {terminal_type}")
             sessions[session_id] = RumbaAPI(gs_short_name_ims=terminal_type)
 
         rumba: RumbaAPI = sessions[session_id]
 
-        log.debug(f"Executando {action} na sessão {session_id}")
+        logger.debug(f"Executando {action} na sessão {session_id}")
 
         if action == 'ping':
             return {'success': True, 'message': 'Server is running'}
@@ -361,8 +355,8 @@ def execute_command(session_id: str, action: str, params: Dict[str, Any]) -> Dic
         else:
             return {'success': False, 'error': f'Comando desconhecido: {action}'}
     except Exception as e:
-        log.error(f"Erro ao executar {action}: {str(e)}")
-        log.error(traceback.format_exc())
+        logger.error(f"Erro ao executar {action}: {str(e)}")
+        logger.error(traceback.format_exc())
         return {'success': False, 'error': str(e)}
 
 def handle_client(client_socket: socket.socket):
@@ -402,15 +396,15 @@ def handle_client(client_socket: socket.socket):
             response = json.dumps(result)
             client_socket.send(response.encode('utf-8'))
         except json.JSONDecodeError:
-            log.error(f"Erro ao decodificar solicitação JSON: {data}")
+            logger.error(f"Erro ao decodificar solicitação JSON: {data}")
             response = json.dumps({
                 'success': False, 
                 'error': 'Formato de solicitação inválido'
             })
             client_socket.send(response.encode('utf-8'))
     except Exception as e:
-        log.error(f"Erro ao processar solicitação: {str(e)}")
-        log.error(f"Dados recebidos: {data}")
+        logger.error(f"Erro ao processar solicitação: {str(e)}")
+        logger.error(f"Dados recebidos: {data}")
         try:
             response = json.dumps({
                 'success': False,
@@ -430,7 +424,7 @@ def start_server():
     args = parser.parse_args()
     terminal_type = args.terminal_type
 
-    log.info(f"Iniciando servidor Rumba para terminal tipo {terminal_type}...")
+    logger.info(f"Iniciando servidor Rumba para terminal tipo {terminal_type}...")
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -443,7 +437,7 @@ def start_server():
 
         server.bind((HOST, PORT))
         server.listen(5)
-        log.info(f"Servidor iniciado em {HOST}:{PORT}")
+        logger.info(f"Servidor iniciado em {HOST}:{PORT}")
 
         while True:
             client, addr = server.accept()
@@ -453,22 +447,22 @@ def start_server():
             client_thread.daemon = True
             client_thread.start()
     except KeyboardInterrupt:
-        log.info("Servidor encerrado pelo usuário")
+        logger.info("Servidor encerrado pelo usuário")
     except Exception as e:
-        log.error(f"Erro no servidor: {str(e)}")
+        logger.error(f"Erro no servidor: {str(e)}")
     finally:
         # Limpar todas as sessões
         for session_id, rumba in list(sessions.items()):
             try:
-                log.info(f"Fechando sessão {session_id}")
+                logger.info(f"Fechando sessão {session_id}")
                 rumba.wd_disconnect_ps()
                 rumba.close_terminal()
                 del sessions[session_id]
             except Exception as e:
-                log.error(f"Erro ao fechar sessão {session_id}: {str(e)}")
+                logger.error(f"Erro ao fechar sessão {session_id}: {str(e)}")
 
         server.close()
-        log.debug("Servidor encerrado")
+        logger.debug("Servidor encerrado")
 
 if __name__ == "__main__":
     start_server()

@@ -1,168 +1,106 @@
-## Autor
-
-- **Autor:** Eduardo Camargo da Silva
-- **Criação:** Novembro de 2024
-
 # RumbaPy
 
-Automação de terminais RUMBA utilizando Python e integração com a DLL `ehlapi32.Dll`.
+Biblioteca Python para automação de terminais IBM/RUMBA via EHLAPI.
 
-O projeto fornece uma base para criar rotinas automatizadas em sistemas legados acessados por terminais RUMBA, como CICS e RHELP, simulando interações de usuário por meio de escrita em tela, leitura de posições e envio de teclas.
+Author: Eduardo Camargo da Silva
+GitHub: https://github.com/littleplankton
+
+O projeto fornece uma interface de alto nível para automação de sistemas legados acessados por terminais RUMBA, utilizando comunicação entre processos Python 64-bit e Python 32-bit.
 
 ---
 
-## Visão geral
+# Arquitetura
 
-Este projeto automatiza interações com terminais RUMBA utilizando a classe `RumbaClient`.
+A DLL `ehlapi32.dll` utilizada pelo RUMBA é exclusivamente 32-bit.
 
-A comunicação com o RUMBA depende da DLL `ehlapi32.Dll`, localizada normalmente em:
+Por esse motivo, o projeto utiliza uma arquitetura híbrida:
 
 ```text
-C:/Program Files (x86)/Micro Focus/RUMBA/system/ehlapi32.Dll
+Python 64-bit
+  ↓
+RumbaClient
+  ↓ socket/subprocess
+Servidor Python 32-bit
+  ↓
+ehlapi32.dll
+  ↓
+RUMBA
 ```
 
-Como essa DLL é **32-bit**, o ambiente que acessa diretamente o RUMBA precisa usar **Python 32-bit**.
+- O processo principal roda em Python 64-bit;
+- O acesso à DLL ocorre em um subprocesso Python 32-bit;
+- A comunicação entre cliente e servidor ocorre via socket TCP local.
 
-O projeto também pode usar um ambiente Python **64-bit** separado para desenvolvimento geral, manipulação de dados e execução de rotinas auxiliares.
+Isso permite utilizar bibliotecas modernas do ecossistema Python 64-bit (`pandas`, `numpy`, `polars`, `openpyxl`, etc.) sem abrir mão da integração com o RUMBA.
 
 ---
 
-## Setup inicial
-
-### Programas necessários
-
-Git:
-
-```text
-https://git-scm.com/download/win
-```
-
-Visual Studio Code:
-
-```text
-https://update.code.visualstudio.com/latest/win32-x64-user/stable
-```
-
-Python 3.13.2 para Windows 64-bit:
-
-```text
-https://www.python.org/ftp/python/3.13.2/python-3.13.2-amd64.exe
-```
-
-Python 3.13.2 para Windows 32-bit:
-
-```text
-https://www.python.org/ftp/python/3.13.2/python-3.13.2.exe
-```
-
-> Observação: os links do Python acima são fixos para a versão **3.13.2**.
-
----
-
-### Configuração do Visual Studio Code
-
-Após instalar o Visual Studio Code:
-
-1. Abra o VS Code.
-2. Vá em **Extensions** no menu lateral.
-3. Procure por **Python**.
-4. Instale a extensão oficial da **Microsoft**.
-
----
-
-### Clonar o repositório com Git
-
-Após instalar o Git:
-
-1. Escolha uma pasta no computador para salvar o projeto.
-
-   Exemplo recomendado:
-
-   ```text
-   C:\Projetos
-   ```
-
-   Evite pastas sincronizadas com OneDrive, como:
-
-   - `Documentos`
-   - `Desktop`
-   - `Área de Trabalho`
-
-   Pastas sincronizadas podem causar problemas com o Git, como conflitos de sincronização, arquivos travados ou alterações inesperadas.
-
-2. Abra o **Prompt de Comando** ou **PowerShell**.
-
-3. Navegue até a pasta escolhida:
-
-   ```bat
-   cd C:\Projetos
-   ```
-
-4. Execute o comando para baixar o projeto:
-
-   ```bat
-   git clone https://github.com/littleplankton/RumbaPy.git
-   ```
-
-5. Entre na pasta do projeto:
-
-   ```bat
-   cd RumbaPy
-   ```
-
-6. Para abrir o projeto no Visual Studio Code, execute:
-
-   ```bat
-   code .
-   ```
-
----
-
-## Terminais suportados
-
-O código suporta três tipos de terminais, definidos pelo parâmetro `terminal_type` ao instanciar `RumbaClient`.
-
-| Terminal | Exemplo de uso | Uso principal |
-|---|---|---|
-| `A` | `RumbaClient(terminal_type='A')` | Usado principalmente em automações no sistema **RHELP do C1**. |
-| `D` | `RumbaClient(terminal_type='D')` | Usado para acesso ao **CICS**. |
-| `Z` | `RumbaClient(terminal_type='Z')` | Também usado para acesso ao **CICS**. |
-
-Exemplo:
-
-```python
-from app.src import RumbaClient
-
-cics = RumbaClient(terminal_type='D')
-```
-
----
-
-## Estrutura esperada do projeto
-
-Uma estrutura mínima recomendada é:
+# Estrutura do Projeto
 
 ```text
 RumbaPy/
-├─ app/
-│  ├─ __init__.py
-│  ├─ src.py
-│  └─ config.py
-├─ logs/
-├─ config.ini
-├─ run.py
-└─ .venv/
+├─ src/
+│  └─ rumbapy/
+│     ├─ __init__.py
+│     ├─ client.py
+│     ├─ server.py
+│     ├─ api.py
+│     ├─ config.py
+│     └─ exceptions.py
+│
+├─ examples/
+│  └─ basic_cics.py
+│
+├─ pyproject.toml
+├─ config.example.ini
+└─ README.md
 ```
-
-O arquivo `config.ini` deve ficar na raiz do projeto, ao lado do `run.py`, salvo se o módulo `app.config` estiver configurado para buscar esse arquivo em outro local.
 
 ---
 
-## Arquivo `config.ini`
+# Requisitos
 
-O projeto precisa de um arquivo `config.ini` para centralizar configurações do ambiente, caminhos e parâmetros usados pela automação.
+- Windows
+- RUMBA instalado
+- Python 64-bit
+- Python 32-bit
+- `ehlapi32.dll`
 
-Como o conteúdo exato depende da implementação de `app.config`, abaixo está um modelo sugerido. Ajuste os nomes das seções e chaves conforme o que estiver definido em `app/config.py`.
+---
+
+# Instalação
+
+## Clonar o repositório
+
+```bash
+git clone https://github.com/littleplankton/RumbaPy.git
+cd RumbaPy
+```
+
+---
+
+## Instalar ambiente principal (64-bit)
+
+```bash
+pip install -e .
+```
+
+---
+
+## Instalar ambiente 32-bit
+
+```bash
+py -3.13-32 -m pip install -e .
+py -3.13-32 -m pip install pywin32 pywinauto
+```
+
+---
+
+# Configuração
+
+Crie um arquivo `config.ini` baseado em `config.example.ini`.
+
+Exemplo:
 
 ```ini
 [cics]
@@ -175,146 +113,92 @@ password = your_password
 
 [32bit_python]
 path = C:/Users/seu_id/AppData/Local/Programs/Python/Python313-32/python.exe
-```
 
-> Importante: não versionar credenciais reais no GitHub. Se o arquivo `config.ini` contiver usuário, senha ou outros dados sensíveis, ele deve ser adicionado ao `.gitignore`.
-
-Exemplo de entrada no `.gitignore`:
-
-```gitignore
-config.ini
-logs/
-.venv/
-__pycache__/
-*.pyc
+[rumba]
+dll_path = C:/Program Files (x86)/Micro Focus/RUMBA/system/ehlapi32.Dll
 ```
 
 ---
 
-## Necessidade de duas versões de Python
-
-O projeto deve trabalhar com duas arquiteturas de Python:
-
-| Ambiente | Arquitetura | Uso recomendado |
-|---|---:|---|
-| Python global 32-bit | 32-bit | Acesso direto ao RUMBA via `ehlapi32.Dll` e automações que dependem de `pywin32`. |
-| Python com `.venv` | 64-bit | Desenvolvimento geral, manipulação de dados e execução de rotinas auxiliares. |
-
-Motivo principal:
-
-- A DLL `ehlapi32.Dll` é 32-bit.
-- Bibliotecas Python carregadas no mesmo processo precisam ter arquitetura compatível com o interpretador Python.
-- Portanto, o acesso direto ao RUMBA deve ocorrer em Python 32-bit.
-- O ambiente 64-bit pode ser usado para rotinas auxiliares, processamento de arquivos e desenvolvimento geral.
-
----
-
-## Verificar versões de Python instaladas
-
-No Windows, use:
-
-```bat
-py -0p
-```
-
-Esse comando lista as versões de Python disponíveis e seus respectivos caminhos.
-
-Para confirmar a arquitetura de uma versão específica:
-
-```bat
-py -3.13-32 -c "import platform; print(platform.architecture())"
-py -3.13-64 -c "import platform; print(platform.architecture())"
-```
-
-Substitua `3.13` pela versão instalada na máquina, se necessário.
-
----
-
-## Bibliotecas necessárias
-
-### Instalação das bibliotecas no Python 32-bit global
-
-Use o interpretador Python 32-bit para instalar as bibliotecas necessárias ao acesso direto ao RUMBA.
-
-Troque `seu_id` pelo seu usuário do Windows:
-
-```bat
-C:/Users/seu_id/AppData/Local/Programs/Python/Python313-32/python.exe -m pip install --upgrade pip
-C:/Users/seu_id/AppData/Local/Programs/Python/Python313-32/python.exe -m pip install pywin32 pandas openpyxl
-```
-
-Após instalar o `pywin32`, caso necessário, execute:
-
-```bat
-C:/Users/seu_id/AppData/Local/Programs/Python/Python313-32/python.exe -m pywin32_postinstall -install
-```
-
-> Observação: o módulo `pythoncom` faz parte do pacote `pywin32`. Não é necessário instalar `pythoncom` separadamente com `pip`.
-
----
-
-### Criar o `.venv` no projeto com Python 64-bit
-
-Acesse a pasta do projeto:
-
-```bat
-cd C:\Projetos\RumbaPy
-```
-
-Crie o ambiente virtual usando Python 64-bit:
-
-```bat
-py -3.13-64 -m venv .venv
-```
-
-Ative o ambiente virtual:
-
-```bat
-.venv\Scripts\activate
-```
-
-Atualize o `pip`:
-
-```bat
-python -m pip install --upgrade pip
-```
-
-Instale as bibliotecas necessárias no ambiente 64-bit:
-
-```bat
-python -m pip install pandas openpyxl pyarrow pyodbc numpy
-```
-
----
-
-## Exemplo básico de uso
+# Uso Básico
 
 ```python
-from app.src import RumbaClient
+from rumbapy import RumbaClient
 
-cics = RumbaClient(terminal_type='D')
+cics = RumbaClient(
+    terminal_type='D',
+    config_path='config.ini'
+)
 
 cics.logon_cics()
-cics.copy_string_to_ps(1, 2, 'SPRE')
-cics.send_key('ENTER')
 ```
 
-Principais operações usadas na automação:
+---
 
-- `copy_string_to_ps(...)`: escreve texto em uma posição específica da tela.
-- `copy_ps_to_string(...)`: lê texto de uma posição específica da tela.
-- `send_key(...)`: envia teclas como `ENTER`, `F6`, `F10`, `F11`, entre outras.
-- `screen_load(...)`: aguarda o carregamento de uma tela com base em coordenadas e texto esperado.
+# Exemplo
+
+```python
+from rumbapy import RumbaClient
+
+cics = RumbaClient('D', 'config.ini')
+
+cics.logon_cics()
+
+cics.copy_string_to_ps(
+    y=3,
+    x=13,
+    text='ABC123'
+)
+
+cics.send_key('ENTER')
+
+```
 
 ---
 
-## Observações importantes
+# Terminais Suportados
 
-- O RUMBA deve estar instalado na máquina.
-- A DLL `ehlapi32.Dll` deve existir no caminho configurado.
-- O terminal RUMBA precisa estar aberto/configurado conforme o tipo de sessão usada (`A`, `D` ou `Z`).
-- O Python 32-bit é obrigatório para carregar a DLL 32-bit.
-- O arquivo `config.ini` deve estar configurado antes da execução das automações.
-- Não publique credenciais reais no GitHub.
+| Terminal | Uso |
+|---|---|
+| A | RHELP |
+| D | CICS |
+| Z | CICS |
 
 ---
+
+# Logging
+
+Exemplo:
+
+```python
+import logging
+from pathlib import Path
+
+Path("logs").mkdir(exist_ok=True)
+
+logging.basicConfig(
+    filename="logs/app.log",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    encoding="utf-8",
+)
+```
+
+---
+
+# Uso como Dependência
+
+O pacote pode ser utilizado diretamente em outros projetos:
+
+```txt
+git+https://github.com/littleplankton/RumbaPy.git@v0.1.0
+```
+
+Exemplo no `requirements.txt`:
+
+```txt
+git+https://github.com/littleplankton/RumbaPy.git@v0.1.0
+pandas
+openpyxl
+polars
+```
