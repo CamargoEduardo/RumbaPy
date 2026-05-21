@@ -164,7 +164,7 @@ class RumbaAPI:
 
     def load_dll(self) -> ctypes.CDLL:
         if platform.architecture()[0] != '32bit':
-            self.logger.critical('Necessario utilizar a versão de 32bit do Python!')
+            logger.critical('Necessario utilizar a versão de 32bit do Python!')
             raise SystemError('Necessario utilizar a versão de 32bit do Python!')
         try:
             return ctypes.windll.LoadLibrary(self.config.dll_path)
@@ -251,12 +251,12 @@ class RumbaAPI:
                 for win in windows:
                     try:
                         win.close()
-                        self.logger.debug(f'Janela do RumbaAPI {win.window_text()} fechada com sucesso!')
+                        logger.debug(f'Janela do RumbaAPI {win.window_text()} fechada com sucesso!')
                     except Exception as e:
-                        self.logger.warning(f'Erro ao encerrar a janela {win.window_text()}: {e}')
+                        logger.warning(f'Erro ao encerrar a janela {win.window_text()}: {e}')
             return True
         except Exception as e:
-            self.logger.error(f'Erro ao encerrar o terminal do Rumba: {e}')
+            logger.error(f'Erro ao encerrar o terminal do Rumba: {e}')
             return False
 
     def wd_connect_ps(self) -> int:
