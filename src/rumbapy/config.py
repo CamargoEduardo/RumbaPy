@@ -35,8 +35,8 @@ class PathsConfig:
 class Config:
     _config_instance = None
     
-    def __init__(self, config_path: Optional[Union[str, Path]] = None) -> None:
-        self.config_path = config_path or Path("config.ini")
+    def __init__(self) -> None:
+        self.config_path = 'isert the path to the config file here'
         self.config = self._load_config()
 
         self.credentials = CredentialsConfig.from_config(self.config)
