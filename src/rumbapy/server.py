@@ -5,7 +5,6 @@ Este script deve ser executado como processo Python 32-bit.
 from typing import Dict, Any
 
 from .api import RumbaAPI, ERROR_CODES
-from . import config as cf
 
 import traceback
 import threading
@@ -14,8 +13,6 @@ import logging
 import socket
 import time
 import json
-
-config = cf.Config()
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +60,7 @@ def screen_load(rumba: RumbaAPI,
     logger.error(error_message)
     return {'success': False, 'error': error_message}
 
-def logon_cics(rumba: RumbaAPI) -> Dict[str, Any]:
+def logon_cics(rumba: RumbaAPI, uid: str, pwd: str) -> Dict[str, Any]:
     """Realiza login no terminal CICS"""
     try:
         logger.debug("Iniciando login no CICS")
@@ -95,8 +92,8 @@ def logon_cics(rumba: RumbaAPI) -> Dict[str, Any]:
         if not result.get('success', False):
             return {'success': False, 'error': result.get('error')}
 
-        rumba.copy_string_to_ps(12, 21, config.credentials.cics_id)
-        rumba.copy_string_to_ps(13, 21, config.credentials.cics_password)
+        rumba.copy_string_to_ps(12, 21, uid)
+        rumba.copy_string_to_ps(13, 21, pwd)
         rumba.wd_send_key('ENTER')
 
         # Verificar senha
@@ -119,7 +116,7 @@ def logon_cics(rumba: RumbaAPI) -> Dict[str, Any]:
         logger.error(traceback.format_exc())
         return {'success': False, 'error': str(e)}
 
-def logon_rhelp(rumba: RumbaAPI) -> Dict[str, Any]:
+def logon_rhelp(rumba: RumbaAPI, uid: str, pwd: str) -> Dict[str, Any]:
     """Realiza login no terminal RHELP (IMS)"""
     try:
         logger.info("Iniciando login no Rhelp")
@@ -143,8 +140,8 @@ def logon_rhelp(rumba: RumbaAPI) -> Dict[str, Any]:
         if not result.get('success', False):
             return {'success': False, 'error': result.get('error')}
 
-        rumba.copy_string_to_ps(10, 47, config.credentials.ims_id)
-        rumba.copy_string_to_ps(11, 47, config.credentials.ims_password)
+        rumba.copy_string_to_ps(10, 47, uid)
+        rumba.copy_string_to_ps(11, 47, pwd)
         rumba.wd_send_key("ENTER")
 
         result = screen_load(rumba, 16, 20, 'Start')
@@ -158,117 +155,6 @@ def logon_rhelp(rumba: RumbaAPI) -> Dict[str, Any]:
         return {'success': True}
     except Exception as e:
         logger.error(f"Erro durante login RHELP: {str(e)}")
-        return {'success': False, 'error': str(e)}
-
-def logon_and_go_to_SCOM_A(rumba: RumbaAPI) -> Dict[str, Any]:
-    """Realiza login e navega para a tela SCOM A"""
-    try:
-        result = logon_cics(rumba)
-        if not result.get('success', False):
-            return result
-
-        rumba.copy_string_to_ps(1, 2, "SCOM")
-        rumba.wd_send_key("ENTER")
-
-        result = screen_load(rumba, 20, 2, "Funcao")
-        if not result.get('success', False):
-            return {'success': False, 'error': result.get('error')}
-
-        rumba.copy_string_to_ps(20, 11, "A")
-        rumba.wd_send_key("ENTER")
-
-        return {'success': True}
-    except Exception as e:
-        logger.error(f"Erro na navegação: {str(e)}")
-        return {'success': False, 'error': str(e)}
-
-def logon_and_go_to_SCPE_ALT(rumba: RumbaAPI) -> Dict[str, Any]:
-    """Realiza login e navega para a tela SCPE ALT"""
-    try:
-        logger.info("Navegando para SCPE ALT")
-        
-        result = logon_cics(rumba)
-        if not result.get('success', False):
-            return result
-
-        rumba.copy_string_to_ps(1, 2, 'SCPE')
-        rumba.wd_send_key("ENTER")
-
-        result = screen_load(rumba, 23, 7, 'INFORME')
-        if not result.get('success', False):
-            return {'success': False, 'error': result.get('error')}
-
-        rumba.copy_string_to_ps(10, 11, 'ALT')
-        rumba.wd_send_key("ENTER")
-
-        result = screen_load(rumba, 2, 2, 'VOLVO')
-        if not result.get('success', False):
-            return {'success': False, 'error': result.get('error')}
-
-        logger.info("Navegação para SCPE ALT concluída")
-        return {'success': True}
-    except Exception as e:
-        logger.error(f"Erro na navegação: {str(e)}")
-        return {'success': False, 'error': str(e)}
-
-def logon_and_go_to_SCPE_INC(rumba: RumbaAPI) -> Dict[str, Any]:
-    """Realiza login e navega para a tela SCPE INC"""
-    # Similar à função anterior, mudando apenas o código para 'INC'
-    try:
-        logger.info("Navegando para SCPE INC")
-        
-        result = logon_cics(rumba)
-        if not result.get('success', False):
-            return result
-
-        rumba.copy_string_to_ps(1, 2, 'SCPE')
-        rumba.wd_send_key("ENTER")
-
-        result = screen_load(rumba, 23, 7, 'INFORME')
-        if not result.get('success', False):
-            return {'success': False, 'error': result.get('error')}
-
-        rumba.copy_string_to_ps(10, 11, 'INC')
-        rumba.wd_send_key("ENTER")
-
-        result = screen_load(rumba, 2, 2, 'VOLVO')
-        if not result.get('success', False):
-            return {'success': False, 'error': result.get('error')}
-
-        logger.info("Navegação para SCPE INC concluída")
-        return {'success': True}
-    except Exception as e:
-        logger.error(f"Erro na navegação: {str(e)}")
-        return {'success': False, 'error': str(e)}
-
-def logon_and_go_to_SCPE_EXC(rumba: RumbaAPI) -> Dict[str, Any]:
-    """Realiza login e navega para a tela SCPE EXC"""
-    # Similar às funções anteriores, mudando apenas o código para 'EXC'
-    try:
-        logger.info("Navegando para SCPE EXC")
-        
-        result = logon_cics(rumba)
-        if not result.get('success', False):
-            return result
-
-        rumba.copy_string_to_ps(1, 2, 'SCPE')
-        rumba.wd_send_key("ENTER")
-
-        result = screen_load(rumba, 23, 7, 'INFORME')
-        if not result.get('success', False):
-            return {'success': False, 'error': result.get('error')}
-
-        rumba.copy_string_to_ps(10, 11, 'EXC')
-        rumba.wd_send_key("ENTER")
-
-        result = screen_load(rumba, 2, 2, 'VOLVO')
-        if not result.get('success', False):
-            return {'success': False, 'error': result.get('error')}
-
-        logger.info("Navegação para SCPE EXC concluída")
-        return {'success': True}
-    except Exception as e:
-        logger.error(f"Erro na navegação: {str(e)}")
         return {'success': False, 'error': str(e)}
 
 def execute_command(session_id: str, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -287,23 +173,23 @@ def execute_command(session_id: str, action: str, params: Dict[str, Any]) -> Dic
         if action == 'ping':
             return {'success': True, 'message': 'Server is running'}
 
+        elif action == 'open_cics':
+            result = rumba.open_cics()
+            return {'success': True, 'result': result}
+
+        elif action == 'open_rhelp':
+            result = rumba.open_rhelp()
+            return {'success': True, 'result': result}
+
         elif action == 'logon_cics':
-            return logon_cics(rumba)
+            uid: int = params['uid']
+            pwd: int = params['pwd']
+            return logon_cics(rumba, uid, pwd)
 
         elif action == 'logon_rhelp':
-            return logon_rhelp(rumba)
-
-        elif action == 'logon_and_go_to_SCOM_A':
-            return logon_and_go_to_SCOM_A(rumba)
-
-        elif action == 'logon_and_go_to_SCPE_ALT':
-            return logon_and_go_to_SCPE_ALT(rumba)
-
-        elif action == 'logon_and_go_to_SCPE_INC':
-            return logon_and_go_to_SCPE_INC(rumba)
-
-        elif action == 'logon_and_go_to_SCPE_EXC':
-            return logon_and_go_to_SCPE_EXC(rumba)
+            uid: int = params['uid']
+            pwd: int = params['pwd']
+            return logon_rhelp(rumba, uid, pwd)
 
         elif action == 'send_key':
             key: str = params['key']

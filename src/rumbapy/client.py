@@ -2,8 +2,7 @@
 Cliente que se comunica com o servidor Rumba persistente.
 """
 from typing import Any, Literal
-
-from . import config as cf
+from pathlib import Path
 
 import subprocess
 import logging
@@ -21,11 +20,10 @@ Mnemonic = Literal[
 logger = logging.getLogger(__name__)
 
 class RumbaClient:
-    def __init__(self, terminal_type: str, config_path: str = "config.ini"):
+    def __init__(self, terminal_type: str, pyhton32bit_path: Path | str):
         self.terminal_type = terminal_type
-        self.config = cf.Config(config_path)
 
-        self.python_32bit = self.config.paths.python_32bit
+        self.python_32bit = pyhton32bit_path
 
         self.session_id = f"{terminal_type}_{int(time.time())}"
         self.HOST = 'localhost'
@@ -107,33 +105,13 @@ class RumbaClient:
 
         return result
 
-    def logon_cics(self) -> bool:
-        self._send_command("logon_cics")
+    def logon_cics(self,  uid: str, pwd: str) -> bool:
+        self._send_command("logon_cics", {'uid': uid, 'pwd': pwd})
         self.connected = True
         return True
 
-    def logon_rhelp(self) -> bool:
-        self._send_command("logon_rhelp")
-        self.connected = True
-        return True
-
-    def logon_and_go_to_SCOM_A(self) -> bool:
-        self._send_command("logon_and_go_to_SCOM_A")
-        self.connected = True
-        return True
-
-    def logon_and_go_to_SCPE_ALT(self) -> bool:
-        self._send_command("logon_and_go_to_SCPE_ALT")
-        self.connected = True
-        return True
-
-    def logon_and_go_to_SCPE_INC(self) -> bool:
-        self._send_command("logon_and_go_to_SCPE_INC")
-        self.connected = True
-        return True
-
-    def logon_and_go_to_SCPE_EXC(self) -> bool:
-        self._send_command("logon_and_go_to_SCPE_EXC")
+    def logon_rhelp(self,  uid: str, pwd: str) -> bool:
+        self._send_command("logon_rhelp", {'uid': uid, 'pwd': pwd})
         self.connected = True
         return True
 

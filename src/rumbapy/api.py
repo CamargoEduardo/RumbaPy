@@ -320,8 +320,8 @@ class RumbaAPI:
         result = wd_send_key(self.rumba_hwnd, command)
         self.wd_wait()
 
-        if result != 0:
-            raise Exception(ERROR_CODES['WD_SendKey'][result])
+        # if result != 0:
+        #     raise Exception(ERROR_CODES['WD_SendKey'][result])
         return result
 
     @timeout()
@@ -331,8 +331,6 @@ class RumbaAPI:
         wd_wait.restype = ctypes.c_int
         result = wd_wait(self.rumba_hwnd)
 
-        if result != 0:
-            raise Exception(ERROR_CODES['WD_Wait'][result])
         return result
 
     @timeout()
@@ -349,14 +347,13 @@ class RumbaAPI:
         position = x + y * 80 - 80
         sBuffer, _ = self.wd_copy_ps_to_string(position, length)
         self.wd_wait()
+
         return sBuffer
 
     @timeout()
-    def copy_field(self, y, x):
+    def copy_field(self, y, x) -> int:
         position = x + y * 80 - 80
-        value, result = self.wd_copy_field_to_string(position)
+        value, _ = self.wd_copy_field_to_string(position)
         self.wd_wait()
 
-        if result != 0:
-            raise Exception(ERROR_CODES['WD_CopyFieldToString'][result])
         return value
