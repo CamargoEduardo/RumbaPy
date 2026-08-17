@@ -182,13 +182,13 @@ def execute_command(session_id: str, action: str, params: Dict[str, Any]) -> Dic
             return {'success': True, 'result': result}
 
         elif action == 'logon_cics':
-            uid: int = params['uid']
-            pwd: int = params['pwd']
+            uid: str = params['uid']
+            pwd: str = params['pwd']
             return logon_cics(rumba, uid, pwd)
 
         elif action == 'logon_rhelp':
-            uid: int = params['uid']
-            pwd: int = params['pwd']
+            uid: str = params['uid']
+            pwd: str = params['pwd']
             return logon_rhelp(rumba, uid, pwd)
 
         elif action == 'send_key':
