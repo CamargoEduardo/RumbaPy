@@ -255,8 +255,7 @@ def handle_client(client_socket: socket.socket):
             if not chunk:
                 break
             chunks.append(chunk)
-            if len(chunk) < 4096:
-                break
+
         data = b''.join(chunks).decode('utf-8')
 
         # Processar comando

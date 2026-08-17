@@ -3,29 +3,119 @@ Cliente que se comunica com o servidor Rumba persistente.
 """
 from typing import Any, Literal
 from pathlib import Path
+from uuid import uuid4
 
 import subprocess
 import logging
 import socket
 import time
 import json
+import sys
 
 Mnemonic = Literal[
-    "ENTER", "TAB", "BACKSPACE", "BACKTAB", "CLEAR", "DOWN", "LEFT", "RIGHT",
-    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
-    "UP", "DELETE", "ERASEEOF", "HOME", "PAGEUP", "PAGEDOWN", "RESET", "HELP",
-    "INSERT"
+    "ENTER",  "TAB",  "BACKSPACE",  "BACKTAB",  "CLEAR", "DOWN",
+    "LEFT",  "RIGHT",  "F1", "F2", "F3", "F4", "F5", "F6", "F7",
+    "F8", "F9", "F10", "F11", "F12", "UP", "DELETE", "ERASEEOF",
+    "HOME",  "PAGEUP",  "PAGEDOWN",  "RESET",  "HELP", "INSERT"
 ]
 
 logger = logging.getLogger(__name__)
 
+def find_python_32bit():
+    base = Path.home() / "AppData/Local/Programs/Python"
+    candidates: list[tuple[tuple[int, int, int], Path]] = []
+    for python_exe in base.glob("Python*/python.exe"):
+        try:
+            result = subprocess.run(
+                [
+                    str(python_exe),
+                    "-c",
+                    (
+                        "import struct, sys; "
+                        "print(struct.calcsize('P') * 8); "
+                        "print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
+                    )
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True
+            )
+            output = result.stdout.strip().splitlines()
+            if len(output) < 2:
+                continue
+
+            architecture = output[0].strip()
+            version = tuple(map(int, output[1].strip().split(".")))
+            if architecture == "32" and version >= (3, 13, 0):
+                candidates.append((version, python_exe))
+        except (subprocess.SubprocessError, ValueError, OSError):
+            continue
+    if not candidates:
+        raise ValueError("Nenhuma versão do Python 32 bits >= 3.13 foi encontrada.")
+
+    _, python_32bit = max(candidates, key=lambda item: item[0])
+    return python_32bit
+
+def update_python_32bit(python_32bit: Path | str) -> None:
+    subprocess.run(
+        [str(python_32bit), "-m", "pip", "install", "--upgrade", "pip"],
+        check=True)
+    subprocess.run(
+        [
+            str(python_32bit),
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "pywin32",
+            "pywinauto",
+            "git+https://github.com/CamargoEduardo/RumbaPy.git"
+        ],
+        check=True)
+
+def update_python_64bit() -> None:
+    python_64bit = sys.executable
+    subprocess.run(
+        [
+            python_64bit,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "pip"
+        ],
+        check=True)
+    subprocess.run(
+        [
+            python_64bit,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--force-reinstall",
+            "--no-cache-dir",
+            "git+https://github.com/CamargoEduardo/RumbaPy.git"
+        ],
+        check=True)
+
 class RumbaClient:
-    def __init__(self, terminal_type: str, pyhton32bit_path: Path | str):
+    def __init__(self,
+                 terminal_type: str,
+                 python32bit_path: Path | str | None = None,
+                 auto_update: bool = True):
         self.terminal_type = terminal_type
 
-        self.python_32bit = pyhton32bit_path
+        self.python_32bit = (
+            Path(python32bit_path)
+            if python32bit_path
+            else find_python_32bit()
+        )
+        if auto_update:
+            update_python_32bit(self.python_32bit)
+            update_python_64bit()
 
-        self.session_id = f"{terminal_type}_{int(time.time())}"
+        self.session_id = f"{terminal_type}_{uuid4().hex}"
         self.HOST = 'localhost'
 
         ports = {'D': 8500, 'A': 8600, 'Z': 8700}
@@ -34,16 +124,21 @@ class RumbaClient:
 
         self._start_server()
 
+
     def _start_server(self):
         """Verifica se o servidor está ativo e, se não estiver, inicia."""
         try:
-            # Tenta conectar ao servidor para verificar se está rodando
             result = self._send_command('ping')
             if result.get('success', False):
                 logger.debug("Conectado ao servidor Rumba existente")
                 return
-        except Exception:
+        except ConnectionRefusedError:
             logger.debug("Servidor Rumba não está em execução, iniciando...")
+        except OSError as e:
+            if e.winerror == 10061:
+                logger.debug("Servidor Rumba não está em execução, iniciando...")
+            else:
+                raise
 
         # Se chegou aqui, precisa iniciar o servidor
         logger.debug(f"Iniciando servidor Rumba usando Python 32-bit: {self.python_32bit}")
@@ -80,30 +175,49 @@ class RumbaClient:
             "params": params
         })
 
-        # Criar socket TCP
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect((self.HOST, self.PORT))
+        last_error = None
 
-            # Enviar request
-            s.sendall(request.encode('utf-8'))
+        for attempt in range(5):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.connect((self.HOST, self.PORT))
+                    s.sendall(request.encode('utf-8'))
 
-            # Receber resposta
-            data = b""
-            while chunk := s.recv(4096):
-                data += chunk
-                if len(chunk) < 4096:
-                    break
+                    data = b""
+                    while True:
+                        chunk = s.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
 
-        try:
-            result: dict[str, Any] = json.loads(data.decode('utf-8'))
-        except json.JSONDecodeError:
-            raise RuntimeError(f"Resposta inválida do servidor: {data[:100]}")
+                try:
+                    result: dict[str, Any] = json.loads(data.decode('utf-8'))
+                except json.JSONDecodeError:
+                    raise RuntimeError(f"Resposta inválida do servidor: {data[:100]}")
 
-        if not result.get('success', False):
-            error = result.get("error", "Erro desconhecido")
-            raise RuntimeError(f"Comando '{action}' falhou: {error}")
+                if not result.get('success', False):
+                    error = result.get("error", "Erro desconhecido")
+                    raise RuntimeError(f"Comando '{action}' falhou: {error}")
 
-        return result
+                return result
+
+            except OSError as e:
+                last_error = e
+
+                if e.winerror not in (10048, 10054):
+                    raise
+
+                logger.warning(
+                    f"Erro de socket {e.winerror} ao executar '{action}'. "
+                    f"Tentativa {attempt + 1}/5."
+                )
+
+                time.sleep(0.2 * (attempt + 1))
+
+        raise RuntimeError(
+            f"Não foi possível comunicar com o servidor após 5 tentativas: "
+            f"{last_error}"
+        )
 
     def logon_cics(self,  uid: str, pwd: str) -> bool:
         self._send_command("logon_cics", {'uid': uid, 'pwd': pwd})
