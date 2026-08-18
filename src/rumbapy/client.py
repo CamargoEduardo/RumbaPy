@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import subprocess
+import textwrap
 import logging
 import socket
 import time
@@ -63,7 +64,7 @@ def find_python_32bit():
 def update_python_32bit(python_32bit: Path | str) -> None:
     python = str(python_32bit)
 
-    check_script = """
+    check_script = textwrap.dedent("""
         import json
         from importlib.metadata import distribution, PackageNotFoundError
 
@@ -99,7 +100,7 @@ def update_python_32bit(python_32bit: Path | str) -> None:
                 }
 
         print(json.dumps(result))
-        """
+        """)
 
     # Uma única chamada ao Python 32-bit para verificar tudo
     result = subprocess.run(
