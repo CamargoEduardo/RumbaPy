@@ -303,7 +303,9 @@ def handle_client(client_socket: socket.socket):
 
 def start_server():
     parser = argparse.ArgumentParser(description='Servidor Rumba')
-    parser.add_argument('--terminal_type', type=str, default='D',
+    parser.add_argument('--terminal_type',
+                        type=str,
+                        default='D',
                         choices=['D', 'A', 'Z'],
                         help='Tipo de terminal (D, A, Z)')
     args = parser.parse_args()

@@ -1,6 +1,7 @@
 """
 Cliente que se comunica com o servidor Rumba persistente.
 """
+from importlib.metadata import distribution, PackageNotFoundError
 from typing import Any, Literal
 from pathlib import Path
 from uuid import uuid4
@@ -20,6 +21,8 @@ Mnemonic = Literal[
 ]
 
 logger = logging.getLogger(__name__)
+
+RUMBAPY_REPO = "https://github.com/CamargoEduardo/RumbaPy.git"
 
 def find_python_32bit():
     base = Path.home() / "AppData/Local/Programs/Python"
@@ -58,46 +61,180 @@ def find_python_32bit():
     return python_32bit
 
 def update_python_32bit(python_32bit: Path | str) -> None:
-    subprocess.run(
-        [str(python_32bit), "-m", "pip", "install", "--upgrade", "pip"],
-        check=True)
-    subprocess.run(
+    python = str(python_32bit)
+
+    check_script = """
+        import json
+        from importlib.metadata import distribution, PackageNotFoundError
+
+        result = {}
+
+        for name in ("pywin32", "pywinauto", "rumbapy"):
+            try:
+                dist = distribution(name)
+
+                info = {
+                    "installed": True,
+                    "version": dist.version,
+                }
+
+                if name == "rumbapy":
+                    direct_url = dist.read_text("direct_url.json")
+
+                    if direct_url:
+                        data = json.loads(direct_url)
+                        info["commit"] = (
+                            data
+                            .get("vcs_info", {})
+                            .get("commit_id")
+                        )
+                    else:
+                        info["commit"] = None
+
+                result[name] = info
+
+            except PackageNotFoundError:
+                result[name] = {
+                    "installed": False
+                }
+
+        print(json.dumps(result))
+        """
+
+    # Uma única chamada ao Python 32-bit para verificar tudo
+    result = subprocess.run(
+        [python, "-c", check_script],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    packages = json.loads(result.stdout)
+
+    # ---------------------------------------------------------
+    # pywin32 / pywinauto
+    # ---------------------------------------------------------
+
+    missing = [
+        package
+        for package in ("pywin32", "pywinauto")
+        if not packages[package]["installed"]
+    ]
+
+    if missing:
+        subprocess.run(
+            [
+                python,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                *missing,
+            ],
+            check=True,
+        )
+
+    # ---------------------------------------------------------
+    # RumbaPy
+    # ---------------------------------------------------------
+
+    rumbapy = packages["rumbapy"]
+
+    remote_commit = subprocess.run(
         [
-            str(python_32bit),
-            "-m",
-            "pip",
-            "install",
-            "--upgrade",
-            "pywin32",
-            "pywinauto",
-            "git+https://github.com/CamargoEduardo/RumbaPy.git"
+            "git",
+            "ls-remote",
+            RUMBAPY_REPO,
+            "HEAD",
         ],
-        check=True)
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()[0]
+
+    if not rumbapy["installed"]:
+        subprocess.run(
+            [
+                python,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                f"git+{RUMBAPY_REPO}",
+            ],
+            check=True,
+        )
+
+    elif rumbapy.get("commit") != remote_commit:
+        subprocess.run(
+            [
+                python,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--force-reinstall",
+                "--no-deps",
+                f"git+{RUMBAPY_REPO}",
+            ],
+            check=True,
+        )
 
 def update_python_64bit() -> None:
     python_64bit = sys.executable
-    subprocess.run(
+
+    try:
+        dist = distribution("rumbapy")
+        direct_url = dist.read_text("direct_url.json")
+
+        if direct_url:
+            data = json.loads(direct_url)
+            installed_commit = (
+                data
+                .get("vcs_info", {})
+                .get("commit_id")
+            )
+        else:
+            installed_commit = None
+
+    except PackageNotFoundError:
+        installed_commit = None
+
+    remote_commit = subprocess.run(
         [
-            python_64bit,
-            "-m",
-            "pip",
-            "install",
-            "--upgrade",
-            "pip"
+            "git",
+            "ls-remote",
+            RUMBAPY_REPO,
+            "HEAD",
         ],
-        check=True)
-    subprocess.run(
-        [
-            python_64bit,
-            "-m",
-            "pip",
-            "install",
-            "--upgrade",
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()[0]
+
+    if installed_commit == remote_commit:
+        return
+
+    command = [
+        python_64bit,
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+    ]
+
+    if installed_commit is not None:
+        command.extend([
             "--force-reinstall",
-            "--no-cache-dir",
-            "git+https://github.com/CamargoEduardo/RumbaPy.git"
-        ],
-        check=True)
+            "--no-deps",
+        ])
+
+    command.append(f"git+{RUMBAPY_REPO}")
+
+    subprocess.run(
+        command,
+        check=True,
+    )
 
 class RumbaClient:
     def __init__(self,
@@ -175,49 +312,28 @@ class RumbaClient:
             "params": params
         })
 
-        last_error = None
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((self.HOST, self.PORT))
+            s.sendall(request.encode('utf-8'))
+            s.shutdown(socket.SHUT_WR)
 
-        for attempt in range(5):
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.connect((self.HOST, self.PORT))
-                    s.sendall(request.encode('utf-8'))
+            data = b""
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
 
-                    data = b""
-                    while True:
-                        chunk = s.recv(4096)
-                        if not chunk:
-                            break
-                        data += chunk
+        try:
+            result: dict[str, Any] = json.loads(data.decode('utf-8'))
+        except json.JSONDecodeError:
+            raise RuntimeError(f"Resposta inválida do servidor: {data[:100]}")
 
-                try:
-                    result: dict[str, Any] = json.loads(data.decode('utf-8'))
-                except json.JSONDecodeError:
-                    raise RuntimeError(f"Resposta inválida do servidor: {data[:100]}")
+        if not result.get('success', False):
+            error = result.get("error", "Erro desconhecido")
+            raise RuntimeError(f"Comando '{action}' falhou: {error}")
 
-                if not result.get('success', False):
-                    error = result.get("error", "Erro desconhecido")
-                    raise RuntimeError(f"Comando '{action}' falhou: {error}")
-
-                return result
-
-            except OSError as e:
-                last_error = e
-
-                if e.winerror not in (10048, 10054):
-                    raise
-
-                logger.warning(
-                    f"Erro de socket {e.winerror} ao executar '{action}'. "
-                    f"Tentativa {attempt + 1}/5."
-                )
-
-                time.sleep(0.2 * (attempt + 1))
-
-        raise RuntimeError(
-            f"Não foi possível comunicar com o servidor após 5 tentativas: "
-            f"{last_error}"
-        )
+        return result
 
     def logon_cics(self,  uid: str, pwd: str) -> bool:
         self._send_command("logon_cics", {'uid': uid, 'pwd': pwd})
