@@ -310,6 +310,14 @@ class RumbaAPI:
         result = wd_copy_field_to_string(self.rumba_hwnd, position, buffer, length)
         return buffer.value.decode("utf-8").rstrip('\0'), result
 
+    def wd_wait(self) -> int:
+        wd_wait = self.wd_dll.WD_Wait
+        wd_wait.argtypes = [ctypes.c_int]
+        wd_wait.restype = ctypes.c_int
+        result = wd_wait(self.rumba_hwnd)
+
+        return result
+
     @timeout()
     def wd_send_key(self, mnemonic: str) -> int:
         wd_send_key = self.wd_dll.WD_SendKey
@@ -322,15 +330,6 @@ class RumbaAPI:
 
         # if result != 0:
         #     raise Exception(ERROR_CODES['WD_SendKey'][result])
-        return result
-
-    @timeout()
-    def wd_wait(self) -> int:
-        wd_wait = self.wd_dll.WD_Wait
-        wd_wait.argtypes = [ctypes.c_int]
-        wd_wait.restype = ctypes.c_int
-        result = wd_wait(self.rumba_hwnd)
-
         return result
 
     @timeout()

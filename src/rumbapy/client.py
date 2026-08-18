@@ -25,6 +25,17 @@ logger = logging.getLogger(__name__)
 
 RUMBAPY_REPO = "https://github.com/CamargoEduardo/RumbaPy.git"
 
+_environment_checked = False
+
+def ensure_python_32bit(python_32bit: Path | str) -> None:
+    global _environment_checked
+
+    if _environment_checked:
+        return
+
+    update_python_32bit(python_32bit)
+    _environment_checked = True
+
 def find_python_32bit():
     base = Path.home() / "AppData/Local/Programs/Python"
     candidates: list[tuple[tuple[int, int, int], Path]] = []
@@ -239,9 +250,9 @@ def update_python_64bit() -> None:
 
 class RumbaClient:
     def __init__(self,
-                 terminal_type: str,
-                 python32bit_path: Path | str | None = None,
-                 auto_update: bool = True):
+                terminal_type: str,
+                python32bit_path: Path | str | None = None,
+                auto_update: bool = True):
         self.terminal_type = terminal_type
 
         self.python_32bit = (
@@ -250,7 +261,7 @@ class RumbaClient:
             else find_python_32bit()
         )
         if auto_update:
-            update_python_32bit(self.python_32bit)
+            ensure_python_32bit(self.python_32bit)
             update_python_64bit()
 
         self.session_id = f"{terminal_type}_{uuid4().hex}"

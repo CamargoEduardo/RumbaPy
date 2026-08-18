@@ -75,10 +75,12 @@ def logon_cics(rumba: RumbaAPI, uid: str, pwd: str) -> Dict[str, Any]:
             result = rumba.wd_connect_ps()
             if result == 0:
                 break
-            assert i < 60, TimeoutError(
-                'Nao foi possivel estabelecer uma conexao com o terminal RUMBA '
-                f'codigo de erro: {result} - {ERROR_CODES['WD_ConnectPS'][result]}'
-            )
+            if i >= 60:
+                error = ERROR_CODES["WD_ConnectPS"].get(result, "Unknown error")
+                raise TimeoutError(
+                    "Nao foi possivel estabelecer uma conexao "
+                    f"com o terminal RUMBA. Codigo: {result} - {error}"
+                )
             time.sleep(1)
 
         result = screen_load(rumba, 14, 33, 'CICS')
@@ -160,6 +162,9 @@ def logon_rhelp(rumba: RumbaAPI, uid: str, pwd: str) -> Dict[str, Any]:
 def execute_command(session_id: str, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """Executa um comando em uma sessão específica"""
     try:
+        if action == 'ping':
+            return {'success': True, 'message': 'Server is running'}
+
         # Obter ou criar a sessão
         if session_id not in sessions:
             terminal_type = params.get('terminal_type', 'D')
@@ -170,10 +175,7 @@ def execute_command(session_id: str, action: str, params: Dict[str, Any]) -> Dic
 
         logger.debug(f"Executando {action} na sessão {session_id}")
 
-        if action == 'ping':
-            return {'success': True, 'message': 'Server is running'}
-
-        elif action == 'open_cics':
+        if action == 'open_cics':
             result = rumba.open_cics()
             return {'success': True, 'result': result}
 
@@ -271,7 +273,7 @@ def handle_client(client_socket: socket.socket):
                     'success': False,
                     'error': 'Parâmetro "action" é obrigatório'
                 })
-                client_socket.send(response.encode('utf-8'))
+                client_socket.sendall(response.encode('utf-8'))
                 return
 
             # Executar o comando
@@ -279,14 +281,14 @@ def handle_client(client_socket: socket.socket):
 
             # Enviar resposta
             response = json.dumps(result)
-            client_socket.send(response.encode('utf-8'))
+            client_socket.sendall(response.encode('utf-8'))
         except json.JSONDecodeError:
             logger.error(f"Erro ao decodificar solicitação JSON: {data}")
             response = json.dumps({
                 'success': False, 
                 'error': 'Formato de solicitação inválido'
             })
-            client_socket.send(response.encode('utf-8'))
+            client_socket.sendall(response.encode('utf-8'))
     except Exception as e:
         logger.error(f"Erro ao processar solicitação: {str(e)}")
         logger.error(f"Dados recebidos: {data}")
@@ -295,7 +297,7 @@ def handle_client(client_socket: socket.socket):
                 'success': False,
                 'error': f"Erro no servidor: {str(e)}"
             })
-            client_socket.send(response.encode('utf-8'))
+            client_socket.sendall(response.encode('utf-8'))
         except:
             pass
     finally:
