@@ -28,3 +28,9 @@ Thumbs.db
 *.parquet
 *.html
 *.txt
+
+# Detalhes internos da infraestrutura (repositório é público)
+docs/interno/
+
+# Artefatos de build
+*.egg-info/
