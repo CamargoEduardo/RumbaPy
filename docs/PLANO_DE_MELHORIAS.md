@@ -312,12 +312,13 @@ Sem mudar arquitetura; ataca os itens críticos de `KNOWN_ISSUES.md`.
 
 ## 8. Validações pendentes (precisam de uma sessão real)
 
-1. Code page devolvido pela DLL em telas com acento (`cp1252` vs `cp850`) — ler bytes crus de uma tela conhecida.
-2. `hawlauncher://` abrindo `BRAZIL_D` e a letra `D` aparecendo em `WD_QuerySessions`; qual processo hospeda a sessão.
-3. `WD_GetSessionHWND` e `WD_ShowSession(SW_HIDE/SW_MINIMIZE)` na sessão aberta.
-4. Tópicos/itens DDE do `RUMBADSP` (`tools/research/dde_list.py`).
-5. Mapeamento `HostCharacterSet=56` → code page EBCDIC (necessário só para a Fase 6).
-6. Tempo real de `WD_Wait` com teclado travado (esperado: TWAIT ≈ 60 s).
+1. ✅ Code page = **cp1252** (validado em 2026-10-03 por escrita local + screenshot).
+2. ✅ `hawlauncher` abre `BRAZIL_D` num processo próprio; letra `D` registrada em ~9 s; `ConnectPS` rc=1 até ~11 s.
+3. ✅ `WD_GetSessionHWND` → janela-raiz do launcher; `WD_ShowSession` não a minimiza; `ShowWindow` sim, e a API segue funcionando.
+4. ⏳ Tópicos/itens DDE do `RUMBADSP` (`tools/research/dde_list.py`) — baixa prioridade.
+5. ✅ `HostCharacterSet=56` = `CHARSET_SWEDISH_EURO` → cp1143 (pela type library).
+6. ⏳ Tempo real de `WD_Wait` com teclado travado (esperado: TWAIT ≈ 60 s) — exige provocar X SYSTEM; não será testado em produção.
+7. ✅ Duas instâncias da mesma letra → diálogo "Short Name already in use" (requisito: fechar todas antes de abrir).
 
 ## 9. Decisões que dependem de você
 

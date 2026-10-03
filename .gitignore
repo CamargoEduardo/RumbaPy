@@ -4,6 +4,9 @@ __pycache__/
 venv/
 logs/
 .venv
+.venv32/
+.pytest_cache/
+.ruff_cache/
 data/
 cache/
 *.log

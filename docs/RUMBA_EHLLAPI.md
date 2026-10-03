@@ -351,8 +351,8 @@ O `ERROR_CODES` atual do `api.py` cobre só um subconjunto disso.
 ## 10. Armadilhas confirmadas e recomendações
 
 1. **Buffers:** `create_string_buffer(n).value` corta no primeiro `NUL` — use `.raw[:n]` e troque `\0` por espaço.
-2. **Encoding:** o texto é ANSI/OEM do Windows (o servidor tem a opção `OEMToANSI`), **não UTF-8**.
-   Use `cp1252` (a validar) com `errors="replace"`.
+2. **Encoding:** o texto é **cp1252** (ANSI), **não UTF-8** — confirmado ao vivo em 2026-10-03 (o byte `0xE7`
+   gravado com `CopyStringToPS` é exibido como `ç`; ida e volta preserva `ç ã É €`). Use `errors="replace"`.
 3. **`WD_QuerySessionStatus` precisa de buffer mutável de 20 B** com a letra no byte 0.
 4. **`WD_CopyPS`** escreve linhas×colunas bytes (2560 no IMS A) — aloque pelo `QuerySessionStatus`.
 5. **`WD_SendKey` > 255 bytes** → rc=2; quebre textos longos.
@@ -393,6 +393,23 @@ O `ERROR_CODES` atual do `api.py` cobre só um subconjunto disso.
   (`rumbatrc.ini` entrada 300).
 
 ---
+
+## 11.1 Validado ao vivo (2026-10-03, BRAZIL_D via Web Launcher, sem teclas AID)
+
+| Item | Resultado |
+|---|---|
+| Registro da letra após lançar o launcher | ~9,4 s (`WD_QuerySessions`: `44 20…20 48 20 80 07` → `D`, tipo `H`, PS 1920) |
+| `WD_ConnectPS` | **rc=1 enquanto a TN3270 conecta** (diálogo "Telnet3270 Application — Connecting To Address") → rc=0 em ~11 s |
+| `WD_Wait` após conectar | rc=0 imediato |
+| `WD_QuerySessionStatus` | `44 20 20 20 · 44 00 20×6 · 44 · 00 · 18 00 · 50 00 · 00 00` → tipo `D`, 24×80 (layout do §7.1 confirmado) |
+| `WD_CopyOIA` | rc=0, formato 1; a imagem da linha de status usa **códigos internos** (não é texto cp1252); G1=`0x10` (LU-LU), G8 zerado com teclado livre |
+| `WD_QueryCursorLocation` / `WD_QueryFieldAttribute` | 1736 = (22,56) / `0xC5` (desprotegido, MDT) |
+| `WD_GetSessionHWND` | HWND da **janela-raiz** do launcher (`"BRAZIL_D - Pro Client"`, mesmo PID) |
+| `WD_ShowSession(6/9)` | rc=0, mas **não** minimiza a janela do launcher → usar `user32.ShowWindow` nesse HWND |
+| Janela oculta (`SW_HIDE`) ou minimizada | a API continua funcionando |
+| Encoding | **cp1252** (screenshot do `ç`) |
+| 2ª instância da mesma letra | diálogo modal **"RUMBA API Service Control — Short Name already in use"**; o HLLAPI segue na 1ª |
+| `WM_CLOSE` na janela do launcher | fecha em ~0,5 s sem confirmação; a letra é desregistrada |
 
 ## 12. Fontes
 
