@@ -1,0 +1,96 @@
+# CI do RumbaPy (J.1). Push no master = deploy para todos os usuários: o master só recebe merge de dev com CI verde
+# + roteiro ao vivo L1–L6 executado pelo dono + versão incrementada + CHANGELOG.md.
+# Nenhum job acessa o RUMBA, a DLL real ou o mainframe: o tests/conftest.py liga o sandbox e as sentinelas (J.2).
+name: CI
+
+on:
+  push:
+    branches: [dev, master]
+  pull_request:
+    branches: [dev, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  lint:
+    name: ruff + pyright
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          architecture: x64
+      - name: Ferramentas (só de desenvolvimento; o pacote continua com dependencies = [])
+        run: python -m pip install --disable-pip-version-check ruff pyright
+      - name: ruff
+        run: ruff check src tests _build --select E,F,W --ignore E501
+      - name: sintaxe compatível com Python 3.12 (bloqueante enquanto o pyright não for)
+        run: python -c "import ast, pathlib; [ast.parse(p.read_text(encoding='utf-8'), str(p), feature_version=(3, 12)) for d in ('src', 'tests', '_build') for p in pathlib.Path(d).rglob('*.py')]; print('ok')"
+      - name: pyright (pythonVersion 3.12, Windows)
+        # TODO(P-G): tornar bloqueante depois que os módulos da Onda 2 substituírem o código legado da v0.1.5.
+        continue-on-error: true
+        run: pyright
+
+  test:
+    name: pytest ${{ matrix.python }} ${{ matrix.arch }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+        arch: [x64, x86]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: ${{ matrix.arch }}
+      - name: Dependências de teste
+        run: python -m pip install --disable-pip-version-check pytest pytest-timeout
+      - name: Interpretador
+        run: python -c "import struct, sys; print(sys.version, struct.calcsize('P') * 8, 'bits')"
+      - name: pytest (sem testes ao vivo; os e2e com worker real rodam nos jobs x86)
+        run: python -m pytest tests -m "not live" -q -ra
+
+  install-smoke:
+    name: install-smoke ${{ matrix.python }}
+    runs-on: windows-latest
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python 32-bit (BOOT do worker com os arquivos instalados)
+        id: py32
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          architecture: x86
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: x64
+      - name: Dependências de teste
+        run: python -m pip install --disable-pip-version-check pytest pytest-timeout
+      - name: git archive do HEAD (o mesmo zip que o GitHub serve em archive/<sha>.zip)
+        run: git archive --format=zip --prefix="RumbaPy-${{ github.sha }}/" -o "${{ runner.temp }}/rumbapy-src.zip" HEAD
+      - name: GitHub falso local → venv limpo → pip install --no-deps → import rumbapy (sandbox) → update → BOOT x86
+        env:
+          RUMBAPY_SMOKE: "1"
+          RUMBAPY_SMOKE_ZIP: ${{ runner.temp }}/rumbapy-src.zip
+          RUMBAPY_SMOKE_SHA: ${{ github.sha }}
+          RUMBAPY_SMOKE_PY32: ${{ steps.py32.outputs.python-path }}
+        run: python -m pytest tests/e2e/update/test_install_smoke.py tests/unit/update/test_packaging.py -q -ra

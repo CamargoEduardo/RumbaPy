@@ -1,4 +1,4 @@
-"""Aceite P-0: ``Key``, ``AIDS``, ``Segment`` e ``tokenize_mnemonic`` (B.6); assinaturas e stubs do P-A."""
+"""Aceite P-0: ``Key``, ``AIDS``, ``Segment`` e ``tokenize_mnemonic`` (B.6); assinaturas das funções do P-A."""
 # ruff: noqa: I001
 from __future__ import annotations
 
@@ -139,17 +139,15 @@ P_A_CALLS: dict[str, Callable[[], Any]] = {
 }
 
 
-def test_p_a_pending_stubs_say_so() -> None:
-    """Enquanto for stub, a função diz que é do P-A; implementada, sai da conta (o comportamento é testado pelo P-A
-    em ``tests/unit/core``) — este arquivo do P-0 nunca precisa ser editado quando o P-A entregar."""
-    pending = []
+def test_p_a_functions_are_implemented() -> None:
+    """O P-A entregou ``Key.parse/pf``, ``tokenize_extra``, ``split_at_aids`` e ``encode_body`` (comportamento testado
+    em ``tests/unit/core/test_keys.py``): nenhuma é mais stub."""
     for name, call in P_A_CALLS.items():
         try:
             call()
-        except NotImplementedError as exc:
-            assert "P-A" in str(exc), name
-            pending.append(name)
-        except Exception:                                             # implementada (pode recusar estes argumentos)
-            continue
-    if not pending:
-        pytest.skip("o P-A já implementou todas as funções de keys")
+        except NotImplementedError as exc:                            # pragma: no cover - regressão
+            pytest.fail(f"{name} voltou a ser stub: {exc}")
+    assert Key.parse("ENTER") is Key.ENTER and Key.pf(3) is Key.PF3
+    assert keys.tokenize_extra("a<Enter>") == ["a", Key.ENTER]
+    assert keys.split_at_aids(["a", Key.ENTER]) == [Segment(("a",), Key.ENTER)]
+    assert keys.encode_body(["a"], host="cics") == ["a"]

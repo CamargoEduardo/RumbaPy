@@ -257,18 +257,14 @@ P_A_CALLS: dict[str, Any] = {
 }
 
 
-def test_p_a_pending_stubs_say_so() -> None:
-    """Enquanto for stub, o método diz que é do P-A; implementado, sai da conta (o comportamento é testado pelo P-A
-    em ``tests/unit/core``) — este arquivo do P-0 nunca precisa ser editado quando o P-A entregar."""
-    screen = Screen.from_wire(snapshot_result(), "D")
-    pending = []
+def test_p_a_methods_are_implemented() -> None:
+    """O P-A entregou os métodos de ``Screen`` (comportamento testado em ``tests/unit/core/test_screen.py``):
+    nenhum deles é mais stub, e todos funcionam com argumentos válidos."""
+    screen = Screen.from_wire(snapshot_result(fields=[{"start": [1, 2], "length": 5, "attr": 0xC0}]), "D")
     for name, call in P_A_CALLS.items():
         try:
             call(screen)
-        except NotImplementedError as exc:
-            assert "P-A" in str(exc), name
-            pending.append(name)
-        except Exception:                                             # implementado (pode recusar estes argumentos)
-            continue
-    if not pending:
-        pytest.skip("o P-A já implementou todos os métodos de Screen")
+        except NotImplementedError as exc:                            # pragma: no cover - regressão
+            pytest.fail(f"Screen.{name} voltou a ser stub: {exc}")
+    assert screen.get(1, 1, 5) == "VOLVO" and "VOLVO" in screen and screen.find("V") == Cursor(1, 1)
+    assert screen.field_at(1, 1) is not None and screen.input_fields

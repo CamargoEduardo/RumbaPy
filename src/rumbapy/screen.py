@@ -6,26 +6,26 @@ status do OIA (``raw[1:81]``) usa códigos internos do emulador: **nunca** a dec
 ``repr()`` de ``Screen``/``Field`` nunca mostra o conteúdo da tela (vai para tracebacks, saídas do pytest e logs com
 ``%r``; uma tela com ``hidden_unknown=True`` pode ter conteúdo oculto não mascarado): para ver a tela use ``print``.
 
-P-0 entrega as dataclasses (inclusive ``Field.end``, que depende da geometria guardada em ``Field.rows/cols``),
-``OIA.from_raw`` e ``Screen.from_wire``; os métodos de consulta e formatação de ``Screen`` (``line``, ``get``,
-``find``, ``table``, ``to_text``…) são do pacote P-A.
+Consultas de ``Screen`` usam coordenadas ``(row, col)`` 1-based e validam a posição contra a geometria da própria tela
+(fora da tela -> ``InvalidPosition``; argumento de tipo errado -> ``ParameterError``). ``get`` e ``find`` trabalham
+no texto linear (um trecho pode continuar na linha seguinte, como no 3270).
 """
 # ruff: noqa: I001
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
-from typing import TYPE_CHECKING, Any, NamedTuple
 from collections.abc import Mapping
+from typing import Any, NamedTuple
 
-from .errors import ProtocolError
+from .errors import InvalidPosition, ParameterError, ProtocolError
+from . import _codec
 
 import time
-
-if TYPE_CHECKING:
-    import re
+import html
+import re
 
 OIA_SIZE = 103
-_P_A = "pendente: implementação do pacote P-A (núcleo puro)"
+_CURSOR_STYLE = "background:#ffd54f;color:#000"
 
 
 class Cursor(NamedTuple):
@@ -276,43 +276,190 @@ class Screen:
         except Exception:                             # repr nunca pode falhar (tracebacks, depuradores)
             return "<Screen>"
 
-    # ------------------------------------------------------------------ consulta e formatação (P-A)
+    # ------------------------------------------------------------------ consulta
+
+    def _offset(self, row: int, col: int) -> int:
+        """(linha, coluna) validadas -> índice 0-based em ``text``."""
+        return _codec.to_pos(row, col, self.rows, self.cols) - 1
+
+    def _cursor_at(self, index: int) -> Cursor:
+        return Cursor(index // self.cols + 1, index % self.cols + 1)
 
     @property
     def lines(self) -> list[str]:
-        raise NotImplementedError(f"Screen.lines: {_P_A}")
+        """As ``rows`` linhas da tela, cada uma com exatamente ``cols`` caracteres."""
+        cols = self.cols
+        return [self.text[i * cols:(i + 1) * cols] for i in range(self.rows)]
 
     def line(self, row: int) -> str:
-        raise NotImplementedError(f"Screen.line: {_P_A}")
+        """Linha ``row`` (1-based) com ``cols`` caracteres; fora da tela -> ``InvalidPosition``."""
+        start = self._offset(row, 1)
+        return self.text[start:start + self.cols]
 
     def get(self, row: int, col: int, length: int) -> str:
-        raise NotImplementedError(f"Screen.get: {_P_A}")
+        """Exatamente ``length`` caracteres a partir de ``(row, col)`` (continua na linha seguinte, como no 3270).
+
+        Trecho que passa do fim da tela -> ``InvalidPosition``; ``length < 1`` -> ``ParameterError``.
+        """
+        pos = _codec.to_pos(row, col, self.rows, self.cols)
+        _codec.check_span(pos, length, self.rows, self.cols)
+        return self.text[pos - 1:pos - 1 + length]
 
     def find(self, text: str | re.Pattern[str], *, case: bool = True) -> Cursor | None:
-        raise NotImplementedError(f"Screen.find: {_P_A}")
+        """Primeira ocorrência de ``text`` (texto ou ``re.Pattern``) no texto linear da tela, ou ``None``.
+
+        ``case=False`` ignora maiúsculas/minúsculas (também para padrões). Texto vazio -> ``ParameterError``.
+        """
+        if isinstance(text, re.Pattern):
+            if not isinstance(text.pattern, str):
+                raise ParameterError.make(detalhe="O padrão deve ser de texto (str), não de bytes.")
+            pattern = text if case else re.compile(text.pattern, text.flags | re.IGNORECASE)
+        else:
+            _check_text(text)
+            if case:
+                index = self.text.find(text)
+                return None if index < 0 else self._cursor_at(index)
+            pattern = re.compile(re.escape(text), re.IGNORECASE)
+        found = pattern.search(self.text)
+        return None if found is None else self._cursor_at(found.start())
 
     def contains(self, text: str, row: int | None = None, col: int | None = None) -> bool:
-        raise NotImplementedError(f"Screen.contains: {_P_A}")
+        """``text`` está na tela (sem posição), na linha ``row`` ou exatamente em ``(row, col)``?
+
+        ``col`` sem ``row`` e texto vazio -> ``ParameterError``; posição fora da tela -> ``InvalidPosition``.
+        """
+        _check_text(text)
+        if row is None:
+            if col is not None:
+                raise ParameterError.make(detalhe="Informe a linha (row) junto com a coluna (col).")
+            return text in self.text
+        if col is None:
+            return text in self.line(row)
+        start = self._offset(row, col)
+        return self.text[start:start + len(text)] == text      # passa do fim da tela => não está lá
 
     def __contains__(self, text: str) -> bool:
-        raise NotImplementedError(f"Screen.__contains__: {_P_A}")
+        return self.contains(text)
+
+    # ------------------------------------------------------------------ campos
+
+    def _require_fields(self, what: str) -> tuple[Field, ...]:
+        if self.fields is None:
+            raise ParameterError.make(detalhe=f"{what} precisa dos campos da tela: use snapshot(fields=True).")
+        return self.fields
 
     def field_at(self, row: int, col: int) -> Field | None:
-        raise NotImplementedError(f"Screen.field_at: {_P_A}")
+        """Campo que contém ``(row, col)`` ou ``None`` (tela não formatada).
+
+        Um campo vai do seu byte de atributo (a posição antes de ``start``) até o último dado, dando a volta no fim
+        da tela. Sem campos no snapshot -> ``ParameterError``.
+        """
+        fields = self._require_fields("field_at")
+        index = self._offset(row, col)
+        size = self.rows * self.cols
+        for item in fields:
+            start = (item.start.row - 1) * self.cols + item.start.col - 1      # 1º dado, 0-based
+            attribute = (start - 1) % size
+            if (index - attribute) % size <= min(item.length, size - 1):
+                return item
+        return None
 
     @property
     def input_fields(self) -> list[Field]:
-        raise NotImplementedError(f"Screen.input_fields: {_P_A}")
+        """Campos desprotegidos (onde se digita), na ordem da tela. Sem campos no snapshot -> ``ParameterError``."""
+        fields = self._require_fields("input_fields")
+        return sorted((f for f in fields if not f.protected), key=lambda f: (f.start.row, f.start.col))
+
+    # ------------------------------------------------------------------ tabelas
 
     def table(self, first_row: int, last_row: int, columns: Mapping[str, tuple[int, int]], *, strip: bool = True,
               skip_blank: bool = True) -> list[dict[str, str]]:
-        raise NotImplementedError(f"Screen.table: {_P_A}")
+        """Linhas ``first_row..last_row`` (inclusive) como dicionários ``{nome: texto}``.
+
+        ``columns`` = ``{"nome": (coluna, tamanho)}`` (coluna 1-based; o trecho precisa caber na linha).
+        ``strip`` tira espaços das pontas; ``skip_blank`` pula linhas em que todas as colunas estão em branco.
+        Para pandas: ``pd.DataFrame(tela.table(...))``.
+        """
+        self._offset(first_row, 1)                                      # valida as duas linhas
+        self._offset(last_row, 1)
+        if first_row > last_row:
+            raise ParameterError.make(detalhe=f"first_row ({first_row}) é maior que last_row ({last_row}).")
+        if not isinstance(columns, Mapping) or not columns:
+            raise ParameterError.make(detalhe="columns deve ser um dicionário {nome: (coluna, tamanho)} não vazio.")
+        spans: list[tuple[str, int, int]] = []
+        for name, spec in columns.items():
+            if not isinstance(name, str):
+                raise ParameterError.make(detalhe=f"Nome de coluna deve ser str (recebi {type(name).__name__}).")
+            if not (isinstance(spec, (tuple, list)) and len(spec) == 2):
+                raise ParameterError.make(detalhe=f"Coluna '{name}': use (coluna, tamanho).")
+            col, length = spec
+            self._offset(first_row, col)                                # valida a coluna
+            if isinstance(length, bool) or not isinstance(length, int) or length < 1:
+                raise ParameterError.make(detalhe=f"Coluna '{name}': o tamanho deve ser um inteiro >= 1.")
+            if col + length - 1 > self.cols:
+                raise InvalidPosition.make(r=first_row, c=col + length - 1, rows=self.rows, cols=self.cols,
+                                           details={"column": name})
+            spans.append((name, col - 1, length))
+        result: list[dict[str, str]] = []
+        for line in self.lines[first_row - 1:last_row]:
+            row = {name: line[start:start + length] for name, start, length in spans}
+            if skip_blank and not any(value.strip() for value in row.values()):
+                continue
+            if strip:
+                row = {name: value.strip() for name, value in row.items()}
+            result.append(row)
+        return result
+
+    # ------------------------------------------------------------------ formatação
+
+    def _footer(self) -> str:
+        """``cursor (22,56) · teclado livre · 24x80 · D BRAZIL_D · 14:05:12``."""
+        from .profiles import PROFILES                 # tardio: screen não puxa profiles ao ser importado (A.4.1)
+        profile = PROFILES.get(self.terminal)
+        parts = [f"cursor {self.cursor}", self.oia.describe()]
+        if self.host_busy:
+            parts.append("host ocupado")
+        if self.hidden_unknown:
+            parts.append("máscara desconhecida")
+        parts += [f"{self.rows}x{self.cols}", f"{self.terminal} {profile.name}" if profile else self.terminal]
+        try:
+            parts.append(time.strftime("%H:%M:%S", time.localtime(self.taken_at)))
+        except (OverflowError, OSError, ValueError):
+            pass
+        return " · ".join(parts)
 
     def to_text(self, *, ruler: bool = True) -> str:
-        raise NotImplementedError(f"Screen.to_text: {_P_A}")
+        """A tela como texto: régua de colunas + número da linha (``ruler=True``) e um rodapé com cursor/OIA."""
+        lines = self.lines
+        if ruler:
+            width = max(3, len(str(self.rows)))
+            pad = " " * (width + 1)
+            cols = range(1, self.cols + 1)
+            tens = "".join(str(c // 10 % 10) if c % 10 == 0 else " " for c in cols).rstrip()
+            units = "".join(str(c % 10) for c in cols)
+            lines = [pad + tens, pad + units] + [f"{n:>{width}} {text}" for n, text in enumerate(lines, 1)]
+        return "\n".join([*lines, self._footer()])
 
     def __str__(self) -> str:
-        raise NotImplementedError(f"Screen.__str__: {_P_A}")
+        return self.to_text()
 
     def _repr_html_(self) -> str:
-        raise NotImplementedError(f"Screen._repr_html_: {_P_A}")
+        """``<pre>`` para Jupyter: texto com ``html.escape`` e a posição do cursor destacada."""
+        row, col = self.cursor.row - 1, self.cursor.col - 1
+        out = []
+        for n, text in enumerate(self.lines):
+            if n == row and 0 <= col < len(text):
+                out.append(html.escape(text[:col]) + f'<span style="{_CURSOR_STYLE}">{html.escape(text[col])}</span>'
+                           + html.escape(text[col + 1:]))
+            else:
+                out.append(html.escape(text))
+        out.append(html.escape(self._footer()))
+        return '<pre style="font-family:monospace;line-height:1.15">' + "\n".join(out) + "</pre>"
+
+
+def _check_text(text: object) -> None:
+    if not isinstance(text, str):
+        kind = type(text).__name__
+        raise ParameterError.make(detalhe=f"O texto procurado deve ser str ou re.Pattern (recebi {kind}).")
+    if not text:
+        raise ParameterError.make(detalhe="O texto procurado não pode ser vazio.")

@@ -275,7 +275,7 @@ def test_guard_policies() -> None:
 
 
 def test_load_dll_without_fake_never_loads_in_the_sandbox(tmp_path: Path) -> None:
-    """Hoje é stub (P-B); implementado, no sandbox e sem ``fake`` tem de recusar (F.1, saída 17).
+    """No sandbox e sem ``fake``, ``load_dll`` recusa ANTES de tudo (F.1, saída 17) — implementado pelo P-B.
 
     NUNCA passe ``hllapi.DLL_PATH`` aqui: o caminho inexistente garante que nada seria carregado nem se a recusa
     do sandbox e a sentinela do ``conftest`` falhassem ao mesmo tempo.
@@ -283,9 +283,9 @@ def test_load_dll_without_fake_never_loads_in_the_sandbox(tmp_path: Path) -> Non
     from rumbapy.errors import SandboxViolation
 
     missing = tmp_path / "nao-existe" / "ehlapi32.Dll"
-    for guard in ("none", "readonly"):
-        with pytest.raises((NotImplementedError, SandboxViolation)):
-            hllapi.load_dll(str(missing), fake=None, guard=guard)
+    for guard in ("none", "readonly", "bogus"):
+        with pytest.raises(SandboxViolation):
+            hllapi.load_dll(str(missing), fake=None, guard=guard)   # type: ignore[arg-type]
 
 
 def test_new_policy_is_an_independent_copy() -> None:
