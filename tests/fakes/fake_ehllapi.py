@@ -15,6 +15,19 @@ Semântica reproduzida (ver docs/RUMBA_EHLLAPI.md):
 * injeção de travamento por função (``hang_on``) para testar watchdogs.
 
 O "host" é programável: ``FakeSession.on_aid`` recebe ``(sessao, aid, campos_modificados)`` e pode trocar a tela.
+
+Extensões do P-0 (aditivas e DESLIGADAS por padrão; desligadas, o comportamento é idêntico ao anterior):
+* ``FakeSession.response_delay`` (s): a AID trava o teclado e o ``on_aid`` só roda depois do atraso (``threading.Timer``);
+  até lá a tela antiga continua e o teclado só é liberado depois que a tela nova estiver no lugar;
+* ``FakeSession.lock_visible_after`` (s): durante esse tempo após a AID o bloqueio não é observável (OIA sem G8, rc 0,
+  entrada aceita) — simula o bloqueio que o cliente não vê;
+* ``FakeEhllapi.rc_override``: ``{"WD_CopyPS": [4, 9]}`` = fila de rc forçados por função (a chamada é registrada em
+  ``calls`` como ``(nome, ("rc_override", rc))`` e não tem nenhum outro efeito);
+* ``WD_SetSessionParamEx`` remove a opção oposta (``NORESET`` tira ``AUTORESET``, ``ATTRB``/``NOATTRB``,
+  ``SRCHALL``/``SRCHFROM``, ``NWAIT``/``LWAIT``/``TWAIT``…);
+* ``@H`` (``Key.HELP``) é aceito como tecla local sem efeito (antes: rc 2, enganoso para quem testa ``Key.HELP``).
+As chamadas são serializadas por uma trava do simulador (o host atrasado roda em outra thread); ``hang_on`` solta a
+trava enquanto a chamada está "presa".
 """
 from __future__ import annotations
 
@@ -37,8 +50,19 @@ AID_A_KEYS = {"H": "SYSREQ", "Q": "ATTN"}
 LOCAL_KEYS = {
     "T": "TAB", "B": "BACKTAB", "0": "HOME", "N": "NEWLINE", "U": "UP", "V": "DOWN", "L": "LEFT", "Z": "RIGHT",
     "<": "BACKSPACE", "D": "DELETE", "I": "INSERT", "F": "ERASEEOF", "R": "RESET", "q": "END", "P": "PRINT",
+    "H": "HELP",  # extensão P-0: Key.HELP (local no 3270; sem efeito aqui)
 }
 LOCAL_A_KEYS = {"F": "ERASEINPUT", "E": "FIELDEXIT", "J": "CURSORSELECT", "T": "PRINTPS", "C": "TEST", "R": "DEVCANCEL"}
+
+# Opções mutuamente exclusivas de WD_SetSessionParamEx (RUMBA_EHLLAPI.md §6): ligar uma desliga as outras do grupo.
+EXCLUSIVE_PARAMS = (
+    frozenset({"ATTRB", "NOATTRB"}), frozenset({"EAB", "NOEAB"}), frozenset({"XLATE", "NOXLATE"}),
+    frozenset({"NEWRET", "OLDRET"}), frozenset({"NWAIT", "LWAIT", "TWAIT"}), frozenset({"SRCHALL", "SRCHFROM"}),
+    frozenset({"SRCHFRWD", "SRCHBKWD"}), frozenset({"FPAUSE", "IPAUSE"}), frozenset({"AUTORESET", "NORESET"}),
+    frozenset({"CONPHYS", "CONLOG"}),
+    frozenset({"WRITE_SUPER", "WRITE_WRITE", "WRITE_READ", "WRITE_NONE", "SUPER_WRITE"}),
+    frozenset({"QUIET", "NOQUIET"}), frozenset({"CFGSIZE", "NOCFGSIZE"}),
+)
 
 
 # --------------------------------------------------------------------------------------------- helpers ctypes
@@ -164,6 +188,11 @@ class FakeSession:
         self.on_aid: Optional[Callable] = None  # host programável
         self.screen_name = ""
         self.aid_log: list = []  # (aid, {nome_campo: texto})
+        # extensões do P-0 (desligadas com 0)
+        self.response_delay = 0.0      # s até o "host" responder a uma AID (on_aid via threading.Timer)
+        self.lock_visible_after = 0.0  # s após a AID em que o bloqueio ainda não é observável
+        self.last_aid_at: Optional[float] = None
+        self.pending_responses = 0     # respostas atrasadas ainda não entregues
 
     # ----------------------------------------------------------------- geometria
     def pos(self, row: int, col: int) -> int:
@@ -234,7 +263,12 @@ class FakeSession:
     # ----------------------------------------------------------------- estado do teclado
     @property
     def busy(self) -> bool:
-        return time.monotonic() < self.locked_until
+        now = time.monotonic()
+        if now >= self.locked_until:
+            return False
+        if self.lock_visible_after > 0 and self.last_aid_at is not None and now < self.last_aid_at + self.lock_visible_after:
+            return False  # bloqueio ainda não observável (extensão lock_visible_after)
+        return True
 
     def lock_for(self, seconds: float) -> None:
         self.locked_until = time.monotonic() + seconds
@@ -243,24 +277,35 @@ class FakeSession:
 class _FakeFunction:
     """Função "exportada": chamável e aceita ``argtypes``/``restype``/``errcheck`` como uma função ctypes."""
 
-    def __init__(self, fn, name):
+    def __init__(self, fn, name, owner=None):
         self._fn = fn
+        self._owner = owner
         self.__name__ = name
         self.argtypes = None
         self.restype = None
         self.errcheck = None
 
     def __call__(self, *args):
-        return self._fn(*args)
+        owner = self._owner
+        if owner is None:
+            return self._fn(*args)
+        with owner._lock:
+            forced = owner._forced_rc(self.__name__)
+            if forced is not None:
+                owner.calls.append((self.__name__, ("rc_override", forced)))
+                return forced
+            return self._fn(*args)
 
 
 class FakeEhllapi:
     """Substituto da ``ctypes.WinDLL(ehlapi32.Dll)`` para testes."""
 
     def __init__(self):
+        self._lock = threading.RLock()  # serializa as chamadas e o host atrasado (response_delay)
+        self.rc_override: dict = {}     # {"WD_CopyPS": [4, 9]}: rc forçados, em fila, por função
         for name in dir(type(self)):
             if name.startswith("WD_") or name == "MultiThreadConnectionOn":
-                setattr(self, name, _FakeFunction(getattr(self, name), name))
+                setattr(self, name, _FakeFunction(getattr(self, name), name, self))
         self.sessions: dict = {}
         self.connected: Optional[str] = None
         self.calls: list = []
@@ -285,7 +330,32 @@ class FakeEhllapi:
     def _log(self, name, *args):
         self.calls.append((name, args))
         if name in self.hang_on:
+            self._hang()
+
+    def _hang(self) -> None:
+        """Espera ``hang_event`` sem segurar a trava do simulador (outras threads e o host atrasado seguem)."""
+        held = 0
+        while True:
+            try:
+                self._lock.release()
+            except RuntimeError:  # a thread não tem (mais) a trava
+                break
+            held += 1
+        try:
             self.hang_event.wait()
+        finally:
+            for _ in range(held):
+                self._lock.acquire()
+
+    def _forced_rc(self, name: str) -> Optional[int]:
+        """Próximo rc forçado de ``name`` (aceita ``"WD_CopyPS"`` ou ``"CopyPS"``), ou ``None``."""
+        if not self.rc_override:
+            return None
+        for key in (name, name[3:] if name.startswith("WD_") else name):
+            queue = self.rc_override.get(key)
+            if queue:
+                return queue.pop(0)
+        return None
 
     def _cur(self) -> Optional[FakeSession]:
         if self.connected is None:
@@ -363,10 +433,14 @@ class FakeEhllapi:
                  "CFGSIZE", "NOCFGSIZE"}
         rc = 0
         for word in _in_bytes(text).decode("latin-1").replace(",", " ").split():
-            if word.upper() not in known:
+            word = word.upper()
+            if word not in known:
                 rc = 2
                 continue
-            self.params.add(word.upper())
+            for group in EXCLUSIVE_PARAMS:  # extensão P-0: a opção oposta deixa de valer
+                if word in group:
+                    self.params -= group - {word}
+            self.params.add(word)
         return rc
 
     # ----------------------------------------------------------------- fn 4 / 18
@@ -612,8 +686,8 @@ class FakeEhllapi:
         raw = _in_bytes(keys)
         if len(raw) >= 256:
             return 2
-        if s.inhibited and "AUTORESET" not in self.params:
-            return 5
+        if s.inhibited and "AUTORESET" not in self.params and not raw.startswith(b"@R"):
+            return 5  # com NORESET só a tecla RESET destrava o "X -f"
         if s.busy:
             return 4
         s.inhibited = False  # AUTORESET
@@ -716,11 +790,31 @@ class FakeEhllapi:
     def _aid(self, s: FakeSession, aid: str) -> None:
         fields = s.modified_fields()
         s.aid_log.append((aid, fields))
+        s.last_aid_at = time.monotonic()
+        if s.response_delay > 0:  # extensão P-0: o host responde depois; a tela antiga continua até lá
+            s.locked_until = float("inf")
+            s.pending_responses += 1
+            timer = threading.Timer(s.response_delay, self._respond, args=(s, aid, fields))
+            timer.daemon = True
+            timer.start()
+            return
         s.lock_for(s.host_delay)
         if s.on_aid is not None:
             s.on_aid(s, aid, fields)
         for fld in s.fields:
             fld.mdt = False
+
+    def _respond(self, s: FakeSession, aid: str, fields: dict) -> None:
+        """Resposta atrasada do host (thread do ``threading.Timer``)."""
+        with self._lock:
+            try:
+                if s.on_aid is not None:
+                    s.on_aid(s, aid, fields)
+                for fld in s.fields:
+                    fld.mdt = False
+            finally:
+                s.pending_responses -= 1
+                s.lock_for(s.host_delay)  # o teclado só libera com a tela nova no lugar
 
     # ----------------------------------------------------------------- nomes alternativos
     def __getattr__(self, name):

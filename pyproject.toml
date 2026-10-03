@@ -17,3 +17,11 @@ where = ["src"]
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+timeout = 30
+markers = [
+    "live: testes ao vivo contra o RUMBA real (manuais; exigem RUMBAPY_LIVE=1 e guard, J.6)",
+    "e2e: ponta a ponta com o worker real em subprocesso e --fake-dll (J.4)",
+]

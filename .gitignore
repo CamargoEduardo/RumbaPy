@@ -2,16 +2,18 @@
 *.pyc
 __pycache__/
 venv/
-logs/
 .venv
 .venv32/
 .pytest_cache/
 .ruff_cache/
-data/
-cache/
 *.log
 
-# Environment variables
+# Dados de trabalho do usuário (ancorados na raiz para não ignorar fixtures de teste)
+/logs/
+/data/
+/cache/
+
+# Environment variables / credenciais locais (NUNCA versionar)
 .env
 config.ini
 
@@ -24,16 +26,18 @@ config.ini
 .DS_Store
 Thumbs.db
 
-# Arquivos
-*.xlsx
-*.csv
-*.xlsm
-*.parquet
-*.html
-*.txt
+# Arquivos de dados do usuário na raiz do repositório
+/*.xlsx
+/*.csv
+/*.xlsm
+/*.parquet
+/*.html
+/*.txt
 
 # Detalhes internos da infraestrutura (repositório é público)
 docs/interno/
 
 # Artefatos de build
 *.egg-info/
+build/
+dist/

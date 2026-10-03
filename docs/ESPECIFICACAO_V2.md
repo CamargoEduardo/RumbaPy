@@ -10,6 +10,9 @@
 
 Palavras normativas: **DEVE**, **NÃO DEVE**, **PODE**. Toda constante citada aqui é contrato: mudar exige editar este arquivo.
 
+> **Ajustes de contrato já implementados** (P-0, 2026-10-03) estão consolidados em **A.8** e **prevalecem** sobre o texto
+> das seções que eles citam. Implementadores das Ondas 1–3: leiam A.8 antes de programar contra B.5, B.7, C.4, F.1, F.3, F.4, J.2, J.3.
+
 ---
 
 ## A. Layout do pacote, responsabilidades e regras de camada
@@ -193,6 +196,23 @@ if _ROLE in ("user", "cli"):
 
 Não existe papel `worker` nem `RUMBAPY_ROLE` (C6): o worker nunca executa `__init__`. `session.open/attach/close` e
 `RumbaClient()` levantam `RumbaError("uso interno: papel legacy-shim")` se `_ROLE` não for `user`/`cli`.
+
+### A.8 Ajustes de contrato implementados no P-0 (prevalecem)
+
+| # | Seção | Contrato em vigor |
+|---|---|---|
+| a | A.4.1 | `_worker/*` também PODE importar `rumbapy._locks` (idle do watchdog, D.4e). Versão/protocolo no worker vêm de `_protocol.VERSION`/`_protocol.PROTOCOL` (não importar `_version`). |
+| b | A.5 | `_paths.home()` é sempre absoluto (`RUMBAPY_HOME` relativo é resolvido contra o cwd); com `RUMBAPY_SANDBOX=1` e sem `RUMBAPY_HOME` → `SandboxViolation`. `read_json`: arquivo **ausente** → `None` com log DEBUG; ilegível/JSON inválido/não-objeto → `None` + WARNING; `PermissionError` → até 20 tentativas de 50 ms. `user_tag()` com sandbox inclui `HOME` no hash (nomes globais dos testes nunca colidem com produção). |
+| c | B.5 | `Field` ganha `rows: int \| None = None` e `cols: int = 80` (só por nome; `repr=False, compare=False`), preenchidos por `Screen.from_wire`. `Field.end` = última posição de dados **inclusive**, dá a volta no fim da tela; `length == 0` → `start` (implementado no P-0). `Field.text`, `ReadResult.text`, `FieldRead.text` com `repr=False`. `Screen.__repr__` = resumo **sem conteúdo** (`<Screen D 24x80 · cursor (22,56) · teclado livre>`). `OIA.from_raw` levanta `TypeError` para não-bytes. `Screen.from_wire(d, terminal, *, rows=None, cols=None)` **exige** as chaves `busy` e `hidden_unknown` (ausentes → `ProtocolError`); posições aceitas como `[row, col]` ou linear. |
+| d | B.7 | Cada classe tem `templates`/`hints` com os textos exatos e `Classe.make(variante="default", **campos)`. `TerminalInUse` variantes `lease`, `rc` (`{extra}` já formatado) e `rc_stuck` (texto da C.8). `UpdateFailed` variantes `default` (texto da B.7 + " Para reinstalar à mão, rode: <comando>" **na mensagem**) e `checkout` (texto literal da H.2, também para editable). |
+| e | C.4 | `_protocol.validate_request(req, *, rows=None, cols=None)` / `validate_args(...)`: **com** a geometria, posição fora da tela (inclusive 0/negativos) e span de `read` → `InvalidPosition`; **sem** a geometria a posição não é conferida (nunca `ParameterError` por posição). O worker DEVE passar `rows/cols` da sessão conectada. Com `secret=True` as mensagens não citam bytes nem total de chunks. |
+| f | E.5 | `OpenInfo.via ∈ {"launcher", "ie", "reuse", "attach"}`. |
+| g | F.1 | `hllapi.load_dll(path, *, fake=None, guard="none")` checa o sandbox antes de tudo e usa `hllapi.new_policy(guard)` (cópia nova de `POLICIES[guard]`; nunca a instância compartilhada). |
+| h | F.3 | `SessionStatus.eab` e `ConnectResult.eab` são **bool** (`bool(b[13] & 0x80)`). |
+| i | F.4 | `check_span(pos, length, ...)` com `length < 1` → `ParameterError`; fora da tela → `InvalidPosition` citando a posição que ficou de fora; argumentos não inteiros (inclusive `bool`) → `ParameterError`. |
+| j | J.2 | O `conftest.py` raiz tem sentinelas (`SENTINEL.is_guarded/function_check`, limpeza via `atexit`) contra: carga das DLLs HLLAPI, mensagens/ativação/entrada a janelas reais (user32), criação de processos do RUMBA/launcher/IE/cscript/shell/taskkill, worker com DLL real sem `--fake-dll`, `os.kill` fora dos filhos e `CTRL_C_EVENT`. |
+| k | J.3 | O `FakeEhllapi` aceita `@H` (HELP) como tecla local e aceita `@R` (RESET) com teclado inibido mesmo sem `AUTORESET` (como o RESET real). O *golden master* do fake fica em `tests/unit/contracts/golden/` (teste garante que não é ignorado pelo Git). |
+| l | — | Arquivos novos usam `# ruff: noqa: I001` (a convenção de imports por comprimento decrescente não é expressável no isort do ruff); E/F/W continuam checados. |
 
 ---
 
