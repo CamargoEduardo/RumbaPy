@@ -224,9 +224,9 @@ def test_screen_load(monkeypatch):
     assert c.screen_load(1, 2, "NADA", text_diff=True) is True
     seen = {}
     t = factory.sessions[0]
-    monkeypatch.setattr(t, "wait_text", lambda *a, **kw: seen.update(args=a, kw=kw))
+    monkeypatch.setattr(t, "_wait_text", lambda *a, **kw: seen.update(args=a, kw=kw))
     c.screen_load(4, 6, "TERMINAL", True)
-    assert seen == {"args": ("TERMINAL", 4, 6), "kw": {"timeout": 120.0, "gone": True}}
+    assert seen == {"args": ("TERMINAL", 4, 6), "kw": {"timeout": 120.0, "gone": True, "cond_first": True}}
 
 
 def test_screen_load_error_grave_only_in_cics():
@@ -236,9 +236,13 @@ def test_screen_load_error_grave_only_in_cics():
     c, _ = client(fake)
     from rumbapy.errors import HostError
 
-    with pytest.raises(HostError) as info:
-        c.screen_load(1, 2, "VOLVO")
+    assert c.screen_load(1, 2, "VOLVO") is True             # v0.1.5: a condição vale antes do erro grave
+    assert c.screen_load(5, 31, "E R R O   G R A V E") is True
+    with pytest.raises(HostError) as info:                  # condição falsa: o detector acusa na hora
+        c.screen_load(1, 2, "NADA!")
     assert info.value.message.startswith("Comando 'screen_load' falhou: O CICS mostrou")
+    with pytest.raises(HostError):
+        c.screen_load(1, 2, "VOLVO", text_diff=True)
 
 
 # ------------------------------------------------------------------------------------------- ciclo de vida
@@ -331,3 +335,135 @@ def test_legacy_module_exports():
     assert legacy.RUMBAPY_REPO == "https://github.com/CamargoEduardo/RumbaPy.git"
     assert "ENTER" in legacy.Mnemonic.__args__ and "INSERT" in legacy.Mnemonic.__args__
     assert rumbapy.client is legacy
+
+
+# ------------------------------------------------------------------------------------------- integração (correções)
+
+def test_send_key_and_read_use_the_compat_deadline_not_session_timeout(monkeypatch):
+    """v0.1.5 esperava 60-120 s por uma transação lenta: o prazo da compat não é o Session.timeout (1 s aqui)."""
+    monkeypatch.setattr(compat, "COMPAT_AID_TIMEOUT", 6.0)
+    c, factory = client(scenarios.slow_host(1.6))
+    assert c.copy_string_to_ps(22, 56, "C") is True
+    assert factory.sessions[0].timeout == 1.0
+    assert c.send_key("ENTER") is True
+    assert c.screen_load(4, 6, "TERMINAL") is True
+    assert aids(factory.fake) == ["ENTER"]
+    factory.fake.sessions["D"].lock_for(1.6)               # X SYSTEM mais longo que o Session.timeout
+    assert c.copy_ps_to_string(4, 6, 8) == "TERMINAL"
+
+
+def test_empty_read_and_empty_screen_load_like_v015():
+    from rumbapy.errors import ParameterError
+
+    c, factory = client(table_screen())
+    assert c.copy_ps_to_string(1, 1, 0) == "" and factory.calls == []
+    assert c.screen_load(1, 2, "") is True and factory.calls == []
+    with pytest.raises(ParameterError) as info:
+        c.screen_load(1, 2, "", text_diff=True)
+    assert info.value.message.startswith("Comando 'screen_load' falhou: screen_load com texto vazio")
+
+
+def _evicted(session, op: str):
+    from rumbapy.errors import SessionReplaced
+
+    def fail(*a, **kw):
+        raise SessionReplaced.make(L="D", terminal="D")
+
+    setattr(session._backend, op, fail)
+
+
+def test_connect_after_evict_attaches_in_one_call():
+    c, factory = client(table_screen())
+    c.copy_ps_to_string(1, 1, 5)
+    _evicted(factory.sessions[0], "connect")                # outro script reabriu: o worker responde SessionReplaced
+    assert c.connect() is True
+    assert [call[:3] for call in factory.calls] == [("attach", "D", 10.0), ("attach", "D", 60.0)]
+    assert factory.sessions[0].state == "replaced" and c.connected
+
+
+def test_connect_with_other_hwnd_attaches():
+    import dataclasses
+
+    c, factory = client(table_screen())
+    c.copy_ps_to_string(1, 1, 5)
+    backend = factory.sessions[0]._backend
+    real = backend.connect
+    backend.connect = lambda: dataclasses.replace(real(), hwnd=0x0DEAD0)
+    assert c.connect() is True
+    assert factory.calls[-1][:3] == ("attach", "D", 60.0)
+
+
+def test_disconnect_after_evict_returns_true():
+    c, factory = client(table_screen())
+    c.copy_ps_to_string(1, 1, 5)
+    _evicted(factory.sessions[0], "disconnect")
+    assert c.disconnect() is True and c.connected is False
+    assert c.copy_ps_to_string(1, 2, 5) == "VOLVO"          # sem sessão: a próxima op anexa de novo
+    assert [call[0] for call in factory.calls] == ["attach", "attach"]
+
+
+def test_close_terminal_when_the_close_probe_finds_a_new_instance(isolated):
+    c, factory = client(table_screen())
+    c.copy_ps_to_string(1, 1, 5)
+    _evicted(factory.sessions[0], "status")                 # a sonda do close descobre a substituição
+    assert c.close_terminal() is True                       # v0.1.5: fecha as janelas do perfil mesmo assim
+    assert isolated["launcher"].closed == 1 and c.connected is False
+
+
+def test_compat_hints_never_point_to_the_v2_api():
+    from rumbapy.errors import NotConnected, SessionReplaced, SessionUncertain
+
+    c, factory = client(table_screen())
+    c.copy_ps_to_string(1, 1, 5)
+    c.disconnect()
+    with pytest.raises(NotConnected) as nc:
+        c.copy_ps_to_string(1, 1, 5)
+    assert nc.value.hint == compat.NOT_CONNECTED_HINT and "t." not in str(nc.value)
+    c.connect()
+    factory.sessions[0]._mark_uncertain()
+    with pytest.raises(SessionUncertain) as unc:
+        c.send_key("ENTER")
+    assert "t.acknowledge" not in str(unc.value) and "screen_load" in str(unc.value)
+    factory.sessions[0]._set_replaced()
+    with pytest.raises(SessionReplaced) as rep:
+        c.copy_ps_to_string(1, 1, 5)
+    assert "Session nova" not in str(rep.value) and "connect()" in str(rep.value)
+
+
+def test_no_host_response_hint_is_compat(monkeypatch):
+    from rumbapy.errors import NoHostResponse
+
+    monkeypatch.setattr(compat, "COMPAT_AID_TIMEOUT", 0.3)
+    fake = _table_screen()                                  # host mudo
+    c, factory = client(fake)
+    factory.sessions.clear()
+    c.copy_ps_to_string(1, 1, 5)
+    factory.sessions[0].timeout = 0.2
+    with pytest.raises(NoHostResponse) as info:
+        c.send_key("ENTER")
+    assert "t.wait_text" not in str(info.value) and "screen_load" in str(info.value)
+
+
+def test_copy_string_to_ps_hidden_field_never_cites_the_char():
+    from rumbapy.errors import EncodingError
+
+    c, _ = client(table_screen())
+    with pytest.raises(EncodingError) as info:
+        c.copy_string_to_ps(9, 20, "ałb")                   # (9,20) é o campo oculto (senha)
+    assert "ł" not in str(info.value) and "U+0142" not in str(info.value)
+
+
+def test_lazy_attach_on_blank_cics_screen_through_the_real_launcher():
+    """CICS logado e com a tela limpa (CLEAR): o anexo automático da compat funciona (E.6 sem exigir texto)."""
+    from tests.unit.client.launcher.world import World
+    from tests.fakes.fake_ehllapi import FakeScreen
+
+    world = World()
+    world.add_launcher_window(screen=FakeScreen(lines=[""] * 24, fields=[{"row": 1, "col": 2, "length": 10}]))
+    session_mod._set_factories(backend_factory=lambda p, py: world.get_backend, user32_factory=lambda: world.user32,
+                               launcher_factory=lambda u32, get: world.launcher())
+    c = compat.RumbaClient("D")
+    assert c.copy_string_to_ps(1, 2, "SCOM") is True
+    assert c.copy_ps_to_string(1, 2, 4) == "SCOM"
+    assert world.user32_calls("post_close") == [] and world.spawned == []
+    c.disconnect()

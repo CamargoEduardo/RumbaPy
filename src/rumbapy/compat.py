@@ -16,7 +16,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
-from .errors import InvalidPassword, ParameterError, PasswordExpired, RecipeNotAvailable, RumbaError
+from .errors import (InvalidPassword, ParameterError, PasswordExpired, RecipeNotAvailable, RumbaError,
+                     SessionReplaced, TerminalInUse, NotConnected)
 from . import session as _session
 from .keys import AIDS, Key
 from . import keys as _keys
@@ -45,6 +46,19 @@ LEGACY_LOGON: tuple[tuple[type[RumbaError], str], ...] = (
 SEND_KEY_CUT = "send_key: ignorado o trecho após a 1ª tecla AID (comportamento da v0.1.5)"
 LAZY_ATTACH_TIMEOUT = 10.0                          # qualquer op sem logon_*/connect anexa sozinha
 CONNECT_TIMEOUT = 60.0
+COMPAT_AID_TIMEOUT = 120.0                          # send_key/copy_ps_to_string: como o @timeout()/screen_load da v0.1.5
+# trechos de mensagem/dica da v2 que citam nomes que o RumbaClient não tem (t.reconnect(), t.acknowledge()...)
+COMPAT_PHRASES: tuple[tuple[str, str], ...] = (
+    ("Use a Session nova.", "Chame connect() deste RumbaClient (anexa ao terminal aberto agora) ou faça o logon "
+                            "de novo."),
+    ("confirme a tela com wait_text/wait_any antes de digitar (ou t.acknowledge()).",
+     "confirme a tela com copy_ps_to_string e reancore com screen_load(...) antes de digitar."),
+    ("reancore com t.wait_text/t.wait_any (ou t.acknowledge()).", "reancore com screen_load(...)."),
+    ("print(t.screen)", "copy_ps_to_string"),
+    ("t.press(Key.RESET)", "send_key('RESET')"),
+    (" (t.wait_ready())", ""),
+)
+NOT_CONNECTED_HINT = "chame connect() deste RumbaClient (ou logon_cics/logon_rhelp) de novo."
 
 SessionFactory = Callable[..., "_session.Session"]
 
@@ -106,9 +120,25 @@ def _prefix(exc: RumbaError, action: str) -> None:
         if isinstance(exc, cls):
             rest = f"{legacy}. {rest}"
             break
-    exc.message = LEGACY_PREFIX.format(acao=action) + rest
+    exc.message = LEGACY_PREFIX.format(acao=action) + _compat_text(rest)
     exc.args = (exc.message,)
+    if isinstance(exc, NotConnected):
+        exc.hint = NOT_CONNECTED_HINT                # "t.reconnect()" não existe no RumbaClient
+    elif exc.hint:
+        exc.hint = _compat_text(exc.hint)
     exc._compat_action = action                      # type: ignore[attr-defined]
+
+
+def _compat_text(text: str) -> str:
+    """Troca as referências à API v2 (``t.acknowledge()``, ``Session``...) pelos equivalentes do ``RumbaClient``."""
+    for old, new in COMPAT_PHRASES:
+        text = text.replace(old, new)
+    return text
+
+
+def _compat_timeout(session: _session.Session) -> float:
+    """Prazo das esperas de ``send_key``/``copy_ps_to_string``: 120 s, ou ``Session.timeout`` se maior (B.11)."""
+    return max(session.timeout, COMPAT_AID_TIMEOUT)
 
 
 def _send_key_tokens(key: object) -> list[_keys.Token]:
@@ -231,15 +261,20 @@ class RumbaClient:
             tokens = _send_key_tokens(key)
             session = self._live()
             with session._op():
-                session._send_tokens(tokens)
+                session._send_tokens(tokens, timeout=_compat_timeout(session))
         return True
 
     def copy_ps_to_string(self, y: int, x: int, length: int) -> str:
-        """``length`` caracteres a partir de ``(y, x)``; como na v0.1.5, um NUL no meio corta o texto ali."""
+        """``length`` caracteres a partir de ``(y, x)``; como na v0.1.5, um NUL no meio corta o texto ali.
+
+        ``length == 0`` devolve ``""`` sem tocar no terminal (v0.1.5: célula vazia de planilha não interrompe o lote).
+        Com o host ocupado (X SYSTEM) espera até 120 s."""
+        if isinstance(length, int) and not isinstance(length, bool) and length == 0:
+            return ""
         with self._legacy("copy_ps_to_string"):
             session = self._live()
             with session._op():
-                result = session._read_raw(y, x, length)
+                result = session._read_raw(y, x, length, timeout=_compat_timeout(session))
         return result.text[:result.nul_at] if result.nul_at >= 0 else result.text
 
     def copy_string_to_ps(self, y: int, x: int, text: str) -> bool:
@@ -263,9 +298,20 @@ class RumbaClient:
         return result.text[:len(result.text) - result.nul_tail] if result.nul_tail > 0 else result.text
 
     def screen_load(self, y: int, x: int, text: str, text_diff: bool = False) -> bool:
-        """Espera ``text`` em ``(y, x)`` por até 120 s (``text_diff=True``: espera o texto sair)."""
+        """Espera ``text`` em ``(y, x)`` por até 120 s (``text_diff=True``: espera o texto sair).
+
+        Como na v0.1.5, a condição é testada antes do detector de erro grave do CICS. ``text == ""`` devolve ``True``
+        na hora (v0.1.5: ``"" == ""``); com ``text_diff=True`` levanta ``ParameterError`` (nunca terminaria)."""
+        if isinstance(text, str) and not text:
+            if text_diff:
+                with self._legacy("screen_load"):
+                    raise ParameterError.make(detalhe="screen_load com texto vazio e text_diff=True nunca termina "
+                                                      "(um texto vazio não tem como sair da tela).")
+            logger.debug("screen_load: texto vazio em (%s,%s), nada a esperar", y, x)
+            return True
         with self._legacy("screen_load"):
-            self._live().wait_text(text, y, x, timeout=waits.SCREEN_LOAD_TIMEOUT, gone=bool(text_diff))
+            self._live()._wait_text(text, y, x, timeout=waits.SCREEN_LOAD_TIMEOUT, gone=bool(text_diff),
+                                    cond_first=True)
         return True
 
     # ------------------------------------------------------------------ ciclo de vida
@@ -274,7 +320,12 @@ class RumbaClient:
         with self._legacy("close_terminal"):
             session = self._session
             if session is not None and session.state in ("ok", "uncertain"):
-                session.close()
+                try:
+                    session.close()
+                except (SessionReplaced, TerminalInUse):
+                    # a instância é de outro script agora: a v0.1.5 fechava as janelas do perfil mesmo assim
+                    _session.close(self._profile.letter)
+                    self._session = None             # a próxima op anexa ao terminal que estiver aberto
             else:
                 _session.close(self._profile.letter)
                 if session is not None and session.state == "replaced":
@@ -287,17 +338,27 @@ class RumbaClient:
         with self._legacy("disconnect"):
             session = self._session
             if session is not None and session.state in ("ok", "uncertain"):
-                session.disconnect()
+                try:
+                    session.disconnect()
+                except SessionReplaced:
+                    # outro script reabriu a letra (o evict foi lido agora): não há o que desconectar
+                    logger.info("disconnect %s: sessão substituída; descartada", self._profile.letter)
+                    self._session = None
         self._connected = False
         return True
 
     def connect(self) -> bool:
-        """Sem sessão: anexa ao terminal aberto (até 60 s; sem terminal -> ``TerminalNotOpen``); senão reconecta."""
+        """Sem sessão (ou substituída): anexa ao terminal aberto (até 60 s; sem terminal -> ``TerminalNotOpen``);
+        senão reconecta à mesma instância — se ela foi fechada/reaberta (``SessionReplaced``), anexa à atual."""
         with self._legacy("connect"):
             session = self._session
             if session is None or session.state in ("closed", "replaced"):
                 self._new("attach", timeout=CONNECT_TIMEOUT)
             else:
-                session.reconnect()
+                try:
+                    session.reconnect()
+                except SessionReplaced:
+                    logger.info("connect %s: a instância foi reaberta; anexando à atual", self._profile.letter)
+                    self._new("attach", timeout=CONNECT_TIMEOUT)
         self._connected = True
         return True

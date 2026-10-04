@@ -26,6 +26,30 @@ def test_attach_with_one_instance(world: World) -> None:
     assert world.user32_calls("post_close") == [] and world.user32_calls("show") == [] and world.spawned == []
 
 
+def test_attach_with_blank_ready_screen(world: World) -> None:
+    """E.6: anexar ao CICS depois de CLEAR (tela em branco, online e pronta) funciona; não exige texto."""
+    from tests.fakes.fake_ehllapi import FakeScreen
+
+    win = world.add_launcher_window(screen=FakeScreen(lines=[""] * 24, name="blank"))
+    start = world.clock.now
+    opened = world.launcher().attach("D", timeout=10)
+    assert opened.info.via == "attach" and opened.info.hwnd == win.hwnd
+    assert opened.screen is not None and not opened.screen.text.strip()
+    assert 1.0 <= world.clock.now - start < 5
+    assert world.user32_calls("post_close") == [] and world.spawned == []
+
+
+def test_attach_blank_but_locked_screen_times_out(world: World) -> None:
+    from tests.fakes.fake_ehllapi import FakeScreen
+    from rumbapy.errors import LaunchTimeout
+
+    world.add_launcher_window(screen=FakeScreen(lines=[""] * 24, name="blank"))
+    world.fake.sessions["D"].inhibited = True
+    with pytest.raises(LaunchTimeout) as info:
+        world.launcher().attach("D", timeout=10)
+    assert info.value.details["phase"] == "first_screen" and world.owner.released == 1
+
+
 def test_attach_terminal_returns_tuple(world: World) -> None:
     world.add_launcher_window()
     backend, info = world.launcher().attach_terminal("D", timeout=10)
@@ -234,3 +258,40 @@ def test_ie_script_timeout_cleans_up_the_late_ie_window(world: World) -> None:
     ie_windows = [w for w in world.user32.windows.values() if w.cls == "IEFrame"]
     assert ie_windows and not any(w.alive for w in ie_windows)
     assert world.user32.windows[old.hwnd].alive
+
+
+# ------------------------------------------------------------------------------------------- OSError do Popen
+def _blocked_popen(monkeypatch: pytest.MonkeyPatch, exc: OSError) -> list[tuple]:
+    """``Popen`` que falha como a política de grupo (nenhum processo é criado; só o portão do sandbox é aberto)."""
+    calls: list[tuple] = []
+
+    def blocked(*args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(args)
+        raise exc
+
+    monkeypatch.setattr(subprocess, "Popen", blocked)
+    monkeypatch.setattr(_launcher, "_sandboxed", lambda: False)
+    return calls
+
+
+@pytest.mark.parametrize("mode", ["launcher", "ie"])
+def test_popen_oserror_becomes_launch_failed(world: World, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    from rumbapy._launcher import Launcher
+
+    calls = _blocked_popen(monkeypatch, OSError(22, "This program is blocked by group policy", None, 1260))
+    exe = _launcher.DEFAULT_LAUNCHER if mode == "launcher" else None
+    launcher = Launcher(world.user32, world.get_backend, clock=world.clock, sleep=world.clock.sleep,
+                        find_worker=lambda letter: None, find_launcher=lambda: exe, neutralize=lambda letter: None)
+    with pytest.raises(LaunchFailed) as info:
+        launcher.open("D", timeout=90)
+    assert "erro 1260" in info.value.message and "group policy" not in str(info.value)
+    assert info.value.message.startswith("Não consegui executar o ")
+    assert len(calls) == 1                                           # tentou uma vez; nunca repetiu
+
+
+def test_popen_file_not_found_is_rumba_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    _blocked_popen(monkeypatch, FileNotFoundError(2, "No such file"))
+    with pytest.raises(RumbaNotInstalled):
+        _launcher.default_spawn([_launcher.DEFAULT_LAUNCHER, "hawlauncher://x"])
+    with pytest.raises(RumbaNotInstalled):
+        _launcher.default_run_script([_launcher.CSCRIPT, "//NoLogo"], 10)

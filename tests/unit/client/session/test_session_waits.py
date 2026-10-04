@@ -190,3 +190,99 @@ def test_press_before_aid_needs_ready_keyboard(table):
     assert "teclado continua bloqueado" in info.value.message
     assert fake.sessions["D"].aid_log == []                 # nunca envia RESET nem a AID sozinho
     assert t.state == "ok"
+
+
+# ------------------------------------------------------------------------------------------- erro grave e a AID (A.14)
+
+ERRO = "E R R O   G R A V E"
+
+
+def _error_host(delay: float = 0.3):
+    """D na tela de erro grave do CICS; o host leva ``delay`` s para responder (como o real): CLEAR/PF3 limpam a
+    tela, ENTER numa tela limpa leva de volta ao erro."""
+    fake = table_screen()
+    session = fake.sessions["D"]
+    session.response_delay = delay
+    _write_line(fake, 5, 31, ERRO)
+
+    def host(s, aid, fields):
+        if aid in ("CLEAR", "PF3"):
+            s.buffer[:] = b" " * len(s.buffer)
+        elif aid == "ENTER":
+            start = s.pos(5, 31) - 1
+            s.buffer[start:start + len(ERRO)] = ERRO.encode("cp1252")
+
+    session.on_aid = host
+    return fake
+
+
+@pytest.mark.parametrize("leave", ["clear", "pf3", "send_keys"])
+def test_aid_from_error_screen_does_not_raise_old_screen(leave):
+    fake = _error_host()
+    t, _, _ = make_session(fake, timeout=3.0)
+    try:
+        with pytest.raises(HostError):
+            t.wait_text("VOLVO", 1, 2)                     # a tela atual É o erro: espera de conteúdo acusa
+        if leave == "clear":
+            t.clear()
+        elif leave == "pf3":
+            t.pf(3)
+        else:
+            t.send_keys("<Clear>")
+        assert t.state == "ok"
+        assert t.screen.get(5, 31, len(ERRO)) != ERRO
+        assert [aid for aid, _ in fake.sessions["D"].aid_log] == ["PF3" if leave == "pf3" else "CLEAR"]
+    finally:
+        t.release()
+
+
+def test_aid_from_clean_screen_to_error_raises_with_the_new_screen():
+    fake = _error_host()
+    _write_line(fake, 5, 31, " " * len(ERRO))              # começa limpa
+    t, _, _ = make_session(fake, timeout=3.0)
+    try:
+        with pytest.raises(HostError) as info:
+            t.enter()
+        assert info.value.screen is not None and info.value.screen.get(5, 31, len(ERRO)) == ERRO
+        assert [aid for aid, _ in fake.sessions["D"].aid_log] == ["ENTER"]
+    finally:
+        t.release()
+
+
+def test_aid_from_error_screen_to_another_error_screen_raises():
+    fake = _error_host()
+    session = fake.sessions["D"]
+
+    def host(s, aid, fields):                              # o host responde com OUTRA tela de erro
+        start = s.pos(6, 1) - 1
+        s.buffer[start:start + 6] = b"OUTRO!"
+
+    session.on_aid = host
+    t, _, _ = make_session(fake, timeout=3.0)
+    try:
+        with pytest.raises(HostError) as info:
+            t.enter()
+        assert info.value.screen is not None and info.value.screen.get(6, 1, 6) == "OUTRO!"
+    finally:
+        t.release()
+
+
+def test_compat_send_key_clear_from_error_screen():
+    from rumbapy import compat
+
+    fake = _error_host()
+
+    def factory(action, terminal, *, python32=None, timeout=None):
+        return make_session(fake, terminal, timeout=3.0)[0]
+
+    import rumbapy.compat as compat_mod
+    original = compat_mod._find_python32
+    compat_mod._find_python32 = lambda explicit: explicit
+    try:
+        c = compat.RumbaClient("D", "C:/py32/python.exe", auto_update=False, _session_factory=factory)
+        assert c.send_key("CLEAR") is True
+        assert c.copy_ps_to_string(5, 31, len(ERRO)) != ERRO
+    finally:
+        compat_mod._find_python32 = original
+        if c._session is not None:
+            c._session.release()

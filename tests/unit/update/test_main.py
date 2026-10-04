@@ -10,7 +10,7 @@ import pytest
 
 import rumbapy
 from tests.e2e.update.support import PKG_SRC, SHA_B, child_env, run_python
-from rumbapy.errors import UpdateCheckFailed, UpdateRequired
+from rumbapy.errors import UpdateCheckFailed, UpdateRequired, UpdateFailed
 from rumbapy import __main__ as cli, _update
 
 
@@ -92,6 +92,82 @@ def test_close_and_doctor_delegate(monkeypatch: pytest.MonkeyPatch, capsys: pyte
     assert cli.main(["doctor", "--verbose"]) == 1
     assert calls == ["d", True]
     assert "2 janela(s) do terminal D fechada(s)" in capsys.readouterr().out
+
+
+def _offline(monkeypatch: pytest.MonkeyPatch, motivo: str = "info/refs: conexão recusada; api: conexão recusada"
+             ) -> list[tuple[str, bool]]:
+    seen: list[tuple[str, bool]] = []
+
+    def fail(context: str = "import", force: bool = False) -> None:
+        seen.append((context, force))
+        raise UpdateCheckFailed.make(motivo=motivo)
+
+    monkeypatch.setattr(_update, "ensure_latest", fail)
+    return seen
+
+
+@pytest.mark.parametrize("report_ok", [True, False])
+def test_doctor_runs_without_network(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+                                     report_ok: bool) -> None:
+    # sem GitHub (VPN caída) o doctor é o que mais ajuda: a falha da checagem vira item e o diagnóstico roda
+    seen = _offline(monkeypatch)
+    calls: list[bool] = []
+
+    class Report:
+        ok = report_ok
+
+    def fake_doctor(verbose: bool = False) -> Report:
+        calls.append(verbose)
+        print("RumbaPy 2.0.0 — diagnóstico")
+        return Report()
+
+    monkeypatch.setattr(rumbapy, "doctor", fake_doctor, raising=False)
+    assert cli.main(["doctor", "--verbose"]) == cli.EXIT_ERROR
+    assert seen == [("cli", False)] and calls == [True]
+    captured = capsys.readouterr()
+    assert captured.out.startswith("[FALHA] Update obrigatório: Não consegui verificar a versão mais recente no "
+                                   "GitHub (info/refs: conexão recusada; api: conexão recusada)")
+    assert "RumbaPy 2.0.0 — diagnóstico" in captured.out
+    assert captured.err == "" and "Traceback" not in captured.out
+
+
+def test_doctor_without_network_sanitizes_reason(monkeypatch: pytest.MonkeyPatch,
+                                                 capsys: pytest.CaptureFixture[str]) -> None:
+    _offline(monkeypatch, motivo="proxy proxy.interno.example.com (10.1.2.3) recusou https://x.example.com/a")
+
+    class Report:
+        ok = True
+
+    monkeypatch.setattr(rumbapy, "doctor", lambda verbose=False: Report(), raising=False)
+    assert cli.main(["doctor"]) == cli.EXIT_ERROR
+    out = capsys.readouterr().out
+    assert "proxy.interno" not in out and "10.1.2.3" not in out and "x.example.com" not in out
+    assert "[FALHA] Update obrigatório:" in out
+
+
+def test_close_still_blocks_without_network(monkeypatch: pytest.MonkeyPatch,
+                                            capsys: pytest.CaptureFixture[str]) -> None:
+    seen = _offline(monkeypatch)
+    calls: list[str] = []
+    monkeypatch.setattr(rumbapy, "close", lambda terminal: calls.append(terminal) or 1, raising=False)
+    assert cli.main(["close", "D"]) == cli.EXIT_ERROR
+    assert seen == [("cli", False)] and calls == []
+    captured = capsys.readouterr()
+    assert captured.err.startswith("Não consegui verificar a versão mais recente no GitHub")
+    assert captured.out == ""
+
+
+def test_doctor_other_update_errors_still_abort(monkeypatch: pytest.MonkeyPatch,
+                                                capsys: pytest.CaptureFixture[str]) -> None:
+    def broken(context: str = "import", force: bool = False) -> None:
+        raise UpdateFailed.make(motivo="pip saiu com 1", log="update.log")
+
+    calls: list[bool] = []
+    monkeypatch.setattr(_update, "ensure_latest", broken)
+    monkeypatch.setattr(rumbapy, "doctor", lambda verbose=False: calls.append(verbose), raising=False)
+    assert cli.main(["doctor"]) == cli.EXIT_ERROR
+    assert calls == []
+    assert capsys.readouterr().err.startswith("A atualização do RumbaPy falhou")
 
 
 def test_usage_error() -> None:

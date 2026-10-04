@@ -278,3 +278,41 @@ def test_client_logs_never_contain_typed_text(table, caplog):
     for secret in ("Zq7pw9k", "Kp3sec", "Wx5"):
         assert secret not in caplog.text
     assert "Kp3sec" not in t.read(9, 20, 8) and "Kp3sec" not in str(t.screen)
+
+
+@pytest.mark.parametrize("pw", ["Q<7kZp", "ab<Tab9", "pa<ss"])
+def test_send_keys_password_with_lt_is_never_quoted(table, pw):
+    """T-SEC-1 / A.8-b: senha com '<' passada SEM secret=True, seguida de <Enter>: a UndefinedKey não cita nada dela."""
+    t, _, fake = table
+    with pytest.raises(UndefinedKey) as info:
+        t.move_to(3, 14).send_keys(f"A000000<Tab>{pw}<Enter>")
+    tail = pw.split("<", 1)[1]
+    assert tail not in str(info.value) and f"<{tail}" not in str(info.value)
+    assert info.value.message.startswith("Tecla '<' desconhecida.")
+    assert send_calls(fake) == [] and aids(fake) == []
+
+
+def test_fill_hidden_field_without_secret_never_cites_the_size(table):
+    """A.9 g: campo oculto é secreto pelo atributo — o Truncated do fill não diz o tamanho do valor."""
+    t, _, fake = table
+    before = [c for c, _ in fake.calls].count("WD_CopyStringToPS")
+    for align in ("left", "right"):
+        with pytest.raises(Truncated) as info:
+            t.fill(9, 20, "SenhaLonga123", align=align)
+        assert "13" not in str(info.value) and "Senha" not in str(info.value)
+        assert info.value.delivery == "none"
+    assert [c for c, _ in fake.calls].count("WD_CopyStringToPS") == before
+    with pytest.raises(Truncated) as visible:
+        t.fill(3, 14, "123456789")                     # campo visível continua citando os tamanhos
+    assert "(9)" in visible.value.message
+
+
+def test_write_and_fill_hidden_field_encoding_error_never_cites_the_char(table):
+    t, _, _ = table
+    for op in (t.write, t.fill):
+        with pytest.raises(EncodingError) as info:
+            op(9, 20, "ałb")
+        assert "ł" not in str(info.value) and "U+0142" not in str(info.value)
+    with pytest.raises(EncodingError) as visible:
+        t.write(3, 14, "ałb")                     # campo visível: a mensagem continua útil
+    assert "U+0142" in visible.value.message

@@ -13,8 +13,8 @@ Nada de segredo vai ao relatório: nem chave, nem senha, nem texto de tela; host
 # ruff: noqa: I001
 from __future__ import annotations
 
+from dataclasses import dataclass, field, replace
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from . import _paths, _protocol, _version
@@ -146,7 +146,30 @@ def _remote_sha() -> str:
 def _update_status() -> dict[str, Any]:
     from . import _update
 
+    if os.environ.get("RUMBAPY_DEV") == "1":
+        # H.2: o aviso "AUTO-UPDATE DESLIGADO" sai uma vez por processo (no import ou no ``ensure_latest("cli")``);
+        # ``_update.status()`` chamaria ``install_mode()`` de novo e repetiria o aviso e o WARNING no update.log.
+        return {"version": _version.__version__, "mode": "dev", "commit": None, "error": None,
+                "last_check": _update.read_state()}
     return _update.status()
+
+
+def _once(fn: Callable[[], dict[str, Any]]) -> Callable[[], dict[str, Any]]:
+    """Memoiza ``fn`` (inclusive a exceção) para um único relatório: o estado do update é lido uma vez só."""
+    cache: list[Any] = []
+
+    def wrapper() -> dict[str, Any]:
+        if not cache:
+            try:
+                cache.append((True, fn()))
+            except Exception as exc:
+                cache.append((False, exc))
+        ok, value = cache[0]
+        if ok:
+            return value
+        raise value
+
+    return wrapper
 
 
 def _find_runtime() -> Any:
@@ -332,6 +355,7 @@ def _check_paths(p: Probes) -> Check:
 def collect(*, verbose: bool = False, probes: Probes | None = None) -> DoctorReport:
     """Monta o relatório sem imprimir (usado por ``doctor`` e pelos testes)."""
     p = probes or Probes()
+    p = replace(p, update_status=_once(p.update_status))  # o estado do update é lido uma vez por relatório
     checks = [
         _guard("Sistema", _check_system),
         _guard("RumbaPy", lambda: _check_package(p)),

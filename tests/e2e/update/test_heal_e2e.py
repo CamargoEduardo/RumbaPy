@@ -61,3 +61,58 @@ def test_dev_mode_shows_the_original_error(installation: Installation) -> None:
     assert done.returncode == 1
     assert "SyntaxError" in done.stderr and "reparado" not in done.stderr
     assert installation.pip_calls() == []
+
+
+# ------------------------------------------------------------------------------------------- A.14 (integração)
+
+CLI_VERSION = ("import sys, runpy\nsys.orig_argv = [sys.executable, '-m', 'rumbapy', 'version']\n"
+               "sys.argv = ['rumbapy', 'version']\nrunpy.run_module('rumbapy', run_name='__main__', alter_sys=True)\n")
+
+
+def _append(inst: Installation, rel: str, text: str = "\ndef quebrado(:\n") -> None:
+    target = inst.site / "rumbapy" / rel
+    target.write_text(target.read_text(encoding="utf-8") + text, encoding="utf-8")
+
+
+def test_broken_main_heals_from_the_cli(installation: Installation) -> None:
+    """``python -m rumbapy ...`` com o ``__main__.py`` quebrado: o ``__init__`` (papel cli) o compila e vai ao heal."""
+    installation.github.master = SHA_B
+    _append(installation, "__main__.py")
+    first = installation.run(CLI_VERSION)
+    assert first.returncode == 1
+    assert "reparado para bbbbbbb" in first.stderr
+    assert len(installation.pip_calls()) == 1
+    second = installation.run(CLI_VERSION)
+    assert second.returncode == 0, second.stderr
+    assert len(installation.pip_calls()) == 1
+
+
+def test_broken_main_is_not_compiled_in_the_user_role(installation: Installation) -> None:
+    _append(installation, "__main__.py")
+    done = installation.run("import rumbapy; print('ok')")
+    assert done.returncode == 0, done.stderr
+    assert installation.pip_calls() == []
+
+
+def test_broken_worker_module_heals_on_import(installation: Installation) -> None:
+    """``_worker/engine.py`` corrompido (o cliente não o importa), master == instalado: o import compila os módulos do
+    worker e cura (sem isso, todo open terminaria em WorkerStartFailed código 1)."""
+    _append(installation, "_worker/engine.py")
+    first = installation.run()
+    assert first.returncode == 1 and "reparado para aaaaaaa" in first.stderr
+    assert len(installation.pip_calls()) == 1
+    assert installation.run().returncode == 0
+
+
+def test_second_import_after_heal_reloads_everything(installation: Installation) -> None:
+    """Jupyter: a mesma célula de novo depois do heal não pode misturar módulos velhos (em memória) e novos."""
+    _append(installation, "session.py")                          # master == instalado: só o heal conserta
+    code = ("import sys\n"
+            "try:\n    import rumbapy\nexcept RuntimeError as exc:\n    print('first', type(exc).__name__)\n"
+            "print('stale', sorted(n for n in sys.modules if n.startswith('rumbapy.')))\n"
+            "import rumbapy\nprint('second', rumbapy.errors.__file__ == rumbapy.session.__file__.replace("
+            "'session.py', 'errors.py'))\n")
+    done = installation.run(code)
+    assert done.returncode == 0, done.stderr
+    lines = done.stdout.strip().splitlines()
+    assert lines[0] == "first RuntimeError" and lines[1] == "stale []" and lines[2] == "second True"

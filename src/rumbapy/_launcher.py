@@ -51,6 +51,7 @@ CONNECT_POLL = 0.5
 CLOSE_POLL = 0.1
 SCREEN_POLL = 0.1
 STABLE_S = 0.3                                        # 1ª tela: igual ao snapshot de >= 0,3 s antes
+BLANK_STABLE_S = 1.0                                  # attach/reuse: tela em branco pronta precisa de 1 s estável
 CLOSE_CHECKS = (3.0, 8.0)                             # diálogos e novo WM_CLOSE nos sobreviventes
 REGISTER_MAX_S = 45.0
 NOT_CLOSABLE_GRACE = 1.0                              # sem nenhuma janela fechada: quanto esperar o desregistro
@@ -99,11 +100,27 @@ def default_spawn(argv: list[str]) -> ProcessLike:
     common: dict[str, Any] = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
                               "stderr": subprocess.DEVNULL, "close_fds": True}
     try:
-        return subprocess.Popen(argv, creationflags=_win32.CREATE_NEW_PROCESS_GROUP | _win32.CREATE_BREAKAWAY_FROM_JOB,
-                                **common)
-    except PermissionError:
-        logger.warning("CREATE_BREAKAWAY_FROM_JOB negado; iniciando o launcher dentro do Job atual")
-        return subprocess.Popen(argv, creationflags=_win32.CREATE_NEW_PROCESS_GROUP, **common)
+        try:
+            return subprocess.Popen(argv, creationflags=_win32.CREATE_NEW_PROCESS_GROUP
+                                    | _win32.CREATE_BREAKAWAY_FROM_JOB, **common)
+        except PermissionError:
+            logger.warning("CREATE_BREAKAWAY_FROM_JOB negado; iniciando o launcher dentro do Job atual")
+            return subprocess.Popen(argv, creationflags=_win32.CREATE_NEW_PROCESS_GROUP, **common)
+    except OSError as exc:
+        raise _spawn_error(exc, "Host Access Web Launcher", argv) from exc
+
+
+def _spawn_error(exc: OSError, what: str, argv: list[str]) -> RumbaError:
+    """``OSError`` do ``Popen`` -> ``RumbaError`` em português (C.5/B.7: só ``RumbaError`` sai da biblioteca).
+
+    Arquivo ausente -> ``RumbaNotInstalled``; o resto (política de grupo/AppLocker, acesso negado...) ->
+    ``LaunchFailed`` variante ``spawn``. Nada do texto do sistema vai à mensagem: só o tipo e o código."""
+    code = getattr(exc, "winerror", None) or exc.errno
+    logger.warning("não consegui executar %s (%s, erro %s)", what, type(exc).__name__, code)
+    if isinstance(exc, FileNotFoundError):
+        return RumbaNotInstalled.make(o_que=what, caminho=str(argv[0]) if argv else "?")
+    motivo = f"{type(exc).__name__}, erro {code}" if code else type(exc).__name__
+    return LaunchFailed.make("spawn", o_que=what, motivo=motivo, details={"winerror": code})
 
 
 def default_run_script(argv: list[str], timeout: float) -> tuple[int | None, bytes]:
@@ -115,8 +132,11 @@ def default_run_script(argv: list[str], timeout: float) -> tuple[int | None, byt
         raise SandboxViolation.make(acao=f"iniciar {os.path.basename(str(argv[0]))}")
     from . import _win32
 
-    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            close_fds=True, creationflags=_win32.CREATE_NO_WINDOW)
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                close_fds=True, creationflags=_win32.CREATE_NO_WINDOW)
+    except OSError as exc:
+        raise _spawn_error(exc, "cscript (fallback Internet Explorer)", argv) from exc
     try:
         out, _err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -219,6 +239,13 @@ def _default_get_backend(python32: str | os.PathLike[str] | None = None) -> GetB
             return _bridge.get_worker(letter, mode, python32=python32)
         return _bridge.get_worker(letter, mode)
 
+    def find_admin(letter: str) -> Backend | None:
+        """Admin só de worker JÁ vivo (E.4 passo 1): ``close`` nunca sobe worker (nem carrega a DLL)."""
+        from ._backend import ExistingAdmin      # tardio: P-D
+
+        return ExistingAdmin.find(letter, python32=python32)  # type: ignore[return-value]
+
+    get.find_admin = find_admin                  # type: ignore[attr-defined]  # usado pelo Launcher._close
     return get
 
 
@@ -277,9 +304,13 @@ class Launcher:
                  legacy_busy_extra: Callable[[str], str] = _legacy_busy_extra,
                  process_alive: Callable[[int, int | None], bool] = _default_process_alive,
                  process_created: Callable[[int], int | None] = _default_process_created,
-                 hllapi_client_pids: Callable[[], Iterable[int]] = _default_hllapi_client_pids) -> None:
+                 hllapi_client_pids: Callable[[], Iterable[int]] = _default_hllapi_client_pids,
+                 find_admin: Callable[[str], Backend | None] | None = None) -> None:
         self.user32 = user32
         self.get_backend = _adapt_get_backend(get_backend)
+        # close sem admin do chamador: conexão admin só com worker JÁ vivo (E.4 passo 1). Padrão: a do get_backend
+        # de produção (``_default_get_backend``); sem ela, ``get_backend(L, "admin")`` (dublês dos testes)
+        self.find_admin = find_admin or getattr(get_backend, "find_admin", None)
         self.spawn = spawn or default_spawn
         self.clock = clock
         self.sleep = sleep
@@ -355,7 +386,12 @@ class Launcher:
         own: Backend | None = None
         if reg is not None and admin is None:        # 1. worker vivo: conexão admin -> evict
             try:
-                own = self.get_backend(letter, "admin")
+                if self.find_admin is not None:
+                    own = self.find_admin(letter)    # nunca sobe worker; None = ele já saiu
+                    if own is None:
+                        logger.info("close %s: o processo auxiliar já saiu; só as janelas", letter)
+                else:
+                    own = self.get_backend(letter, "admin")
             except RumbaError as exc:
                 logger.warning("close %s: conexão admin com o processo auxiliar falhou (%s)", letter,
                                type(exc).__name__)
@@ -600,6 +636,13 @@ class Launcher:
         try:
             box[0] = self._get_owner(letter, owners)
             result = self._reuse_connect(letter, box, owners, until=min(deadline, self.clock() + REUSE_CONNECT_S))
+        except TerminalInUse as exc:
+            _release_quietly(box[0], letter)
+            if exc.rc != 11:
+                # lease de OUTRO script: a instância está saudável, só ocupada; reuse=True nunca a derruba
+                raise
+            logger.info("open %s: reuse falhou (TerminalInUse rc 11)", letter)
+            return None
         except (TerminalError, HllapiError) as exc:
             logger.info("open %s: reuse falhou (%s)", letter, type(exc).__name__)
             _release_quietly(box[0], letter)
@@ -618,7 +661,8 @@ class Launcher:
             return None
         try:
             owner.bind_instance(result.hwnd)                 # antes do snapshot (A.9 i)
-            screen = self._first_screen(profile, owner, until=deadline, t0=t0, total=deadline - t0)
+            screen = self._first_screen(profile, owner, until=deadline, t0=t0, total=deadline - t0,
+                                        require_text=False)       # instância que já existia: branco vale
             self._apply_window(result.hwnd, window)
         except BaseException:
             _release_quietly(owner, letter)
@@ -740,8 +784,14 @@ class Launcher:
                 raise self._timeout(profile, "connect", t0, hint=STILL_CONNECTING_HINT if connecting else None)
             self.sleep(CONNECT_POLL)
 
-    def _first_screen(self, profile: Profile, owner: Backend, *, until: float, t0: float, total: float) -> Screen:
-        """Passo 7: snapshot livre, não em branco, online e pronto, igual a outro tirado >= 0,3 s antes."""
+    def _first_screen(self, profile: Profile, owner: Backend, *, until: float, t0: float, total: float,
+                      require_text: bool = True) -> Screen:
+        """Passo 7: snapshot livre, online e pronto, igual a outro tirado >= 0,3 s antes.
+
+        ``require_text=True`` (instância lançada por este ``open``): a tela não pode estar toda em branco — logo
+        depois do rc 0 o PS ainda vem vazio (R16). ``require_text=False`` (``attach``/``reuse`` de uma instância que já
+        existia): tela em branco pronta é válida (ex.: CICS depois de CLEAR), mas só depois de ficar estável por
+        ``BLANK_STABLE_S`` (instância recém-aberta por outro processo ainda esperando a 1ª tela)."""
         candidate: tuple[Screen, float] | None = None
         while True:
             try:
@@ -749,9 +799,10 @@ class Launcher:
             except (HostBusy, KeyboardLocked):
                 screen = None
             now = self.clock()
-            if screen is not None and _looks_ready(screen):
+            if screen is not None and _looks_ready(screen, require_text):
                 if candidate is not None and _same(candidate[0], screen):
-                    if now - candidate[1] >= STABLE_S:
+                    needed = STABLE_S if screen.text.strip() else BLANK_STABLE_S
+                    if now - candidate[1] >= needed:
                         return screen
                 else:
                     candidate = (screen, now)
@@ -826,7 +877,8 @@ class Launcher:
                 owner = _boxed(box)
                 seconds_to_connect = self.clock() - t0
                 owner.bind_instance(result.hwnd)             # antes do snapshot (A.9 i)
-                screen = self._first_screen(profile, owner, until=deadline, t0=t0, total=float(timeout))
+                screen = self._first_screen(profile, owner, until=deadline, t0=t0, total=float(timeout),
+                                            require_text=False)   # CICS depois de CLEAR: tela em branco pronta
             except BaseException:
                 _release_quietly(box[0], letter)
                 raise
@@ -880,9 +932,33 @@ def _boxed(box: list[Backend | None]) -> Backend:
     return backend
 
 
-def _looks_ready(screen: Screen) -> bool:
+def _looks_ready(screen: Screen, require_text: bool = True) -> bool:
+    """Tela pronta para o passo 7: livre, online, pronta e — só se ``require_text`` — não toda em branco."""
     oia = screen.oia
-    return (not screen.host_busy and bool(screen.text.strip()) and bool(oia.online) and bool(oia.ready))
+    return (not screen.host_busy and (not require_text or bool(screen.text.strip())) and bool(oia.online)
+            and bool(oia.ready))
+
+
+RootKind = Literal["rumba", "edge", "other"]
+
+
+def root_kind(user32: User32, root: int) -> RootKind | None:
+    """De quem é a janela-raiz ``root`` de uma sessão HLLAPI (``Session.show/minimize/window``, E.3).
+
+    ``"rumba"`` = processo do RUMBA (launcher ou IE que não é aba do Edge); ``"edge"`` = Edge (inclusive a aba no modo
+    IE, cuja janela é a do navegador inteiro); ``"other"`` = outro programa; ``None`` = a janela não existe mais."""
+    snap = Snapshot(user32)
+    win = snap.by_hwnd.get(root)
+    if win is None:
+        return None
+    image = snap.image(win.pid)
+    if image == EDGE_IMAGE:
+        return "edge"
+    if image not in RUMBA_IMAGES:
+        return "other"
+    if image == IE_IMAGE and snap.parent_image(win.pid) == EDGE_IMAGE:
+        return "edge"
+    return "rumba"
 
 
 def _same(a: Screen, b: Screen) -> bool:

@@ -183,3 +183,94 @@ def test_close_releases_only_the_admin_connection_it_opened(world: World) -> Non
     assert world.admin.released == 1
     world.launcher().close_all("D", admin=world.admin)
     assert world.admin.released == 1                                  # o admin do chamador continua com ele
+
+
+# ------------------------------------------------------------------------------------------- close nunca sobe worker
+def test_close_uses_only_an_already_running_worker(world: World) -> None:
+    """E.4 passo 1: com ``find_admin`` (produção) o close nunca pede ``get_backend(L, "admin")`` (que subiria worker)."""
+    win = world.add_launcher_window()
+    world.worker = {"pid": 77, "hwnd": win.hwnd, "hwnd_pid": win.pid}
+    asked: list[str] = []
+
+    def gone(letter: str):  # type: ignore[no-untyped-def]
+        asked.append(letter)
+        return None                                           # o worker estava parando: já saiu
+
+    assert world.launcher(find_admin=gone).close_all("D") == 1
+    assert asked == ["D"] and world.backend_requests == []
+    assert not [e for e in world.timeline if e[0] == "backend"]
+
+    win = world.add_launcher_window()
+    world.worker = {"pid": 77, "hwnd": win.hwnd, "hwnd_pid": win.pid}
+    assert world.launcher(find_admin=lambda letter: world.admin).close_all("D") == 1
+    assert world.backend_requests == []
+    assert world.index("backend", "admin", "evict") < world.index("user32", "post_close", win.hwnd)
+    assert world.admin.released == 1
+
+
+def test_default_get_backend_exposes_find_admin_that_never_spawns(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rumbapy._backend import ExistingAdmin
+    from rumbapy.errors import WorkerCrashed
+    from rumbapy import _launcher, _bridge
+
+    class Handle:
+        pid, alive = 77, True
+
+        def __init__(self) -> None:
+            self.requests: list[str] = []
+
+        def request(self, op, args=None, **kw):  # type: ignore[no-untyped-def]
+            self.requests.append(op)
+            return {"sessions": []} if op == "sessions" else {"evicted_owner": None, "was_connected": False}
+
+    class Bridge:
+        def __init__(self, handle) -> None:  # type: ignore[no-untyped-def]
+            self.handle, self.released, self.found = handle, [], []
+
+        def find_handle(self, letter, mode="admin", *, python32=None):  # type: ignore[no-untyped-def]
+            self.found.append((letter, mode))
+            return self.handle
+
+        def get_handle(self, *a, **kw):  # type: ignore[no-untyped-def]
+            raise AssertionError("o close subiu um worker")
+
+        get_worker = get_handle
+
+        def release(self, handle) -> None:  # type: ignore[no-untyped-def]
+            self.released.append(handle)
+
+    handle = Handle()
+    bridge = Bridge(handle)
+    monkeypatch.setattr(_bridge, "default_bridge", lambda: bridge)
+    get = _launcher._default_get_backend()
+    admin = get.find_admin("D")                               # type: ignore[attr-defined]
+    assert isinstance(admin, ExistingAdmin) and bridge.found == [("D", "admin")]
+    assert admin.evict("close")["evicted_owner"] is None and admin.sessions() == []
+    handle.alive = False                                      # saiu entre o evict e a verificação
+    with pytest.raises(WorkerCrashed):
+        admin.sessions()
+    admin.release()
+    admin.release()
+    assert bridge.released == [handle] and handle.requests == ["evict", "sessions"]
+    bridge.handle = None
+    assert get.find_admin("D") is None                        # type: ignore[attr-defined]
+
+
+def test_world_evict_revokes_the_owner_like_the_real_worker(world: World) -> None:
+    """Contrato do dublê (= WorkerServer, C.6.2): admin e dono dividem o Engine; o evict desconecta e despeja o dono."""
+    from rumbapy.errors import SessionReplaced, TerminalInUse
+    from tests.fakes.fake_backend import InProcessBackend
+
+    world.add_launcher_window()
+    assert world.owner.connect().connected
+    other = InProcessBackend(world.fake, "D", share=world.admin.inner)
+    with pytest.raises(TerminalInUse):                        # um dono por vez
+        other.connect()
+    result = world.admin.evict("close")
+    assert result["was_connected"] is True and result["evicted_owner"] is not None
+    assert world.fake.connected is None                       # a conexão HLLAPI do "processo" caiu
+    with pytest.raises(SessionReplaced):
+        world.owner.snapshot()
+    world.owner.release()                                     # devolve o handle despejado: o próximo é novo
+    assert world.owner.connect().connected
+    assert world.admin.evict("close")["evicted_owner"] is not None

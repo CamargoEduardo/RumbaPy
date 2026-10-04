@@ -154,3 +154,25 @@ def test_attach_through_real_launcher():
     finally:
         session_mod._set_factories(backend_factory=None, user32_factory=None, launcher_factory=None)
     assert connect is not None
+
+
+def test_window_of_an_edge_ie_mode_tab_is_refused():
+    """Sessão HLLAPI de uma aba do Edge no modo IE: a janela-raiz é a do navegador inteiro (E.3) — nunca mexer."""
+    from tests.fakes.fake_user32 import FakeUser32, FakeWindow
+
+    user32 = FakeUser32()
+    user32.add_process(900, "msedge.exe")
+    user32.add_process(901, "iexplore.exe", parent_pid=900)
+    edge = user32.add_window("Caixa de entrada - Outlook - Microsoft Edge", cls="Chrome_WidgetWin_1", pid=900)
+    user32.windows[scenarios.HWND_D] = FakeWindow(scenarios.HWND_D, "", "Internet Explorer_Server", 901,
+                                                  parent=edge.hwnd)
+    t, _, _ = make_session(table_screen(), user32=user32)
+    try:
+        for action in (t.show, t.minimize, lambda: t.window):
+            with pytest.raises(ParameterError) as info:
+                action()
+            assert "Edge" in info.value.message and "Outlook" not in str(info.value)
+        assert user32.calls_to("show") == []
+        assert t.state == "ok"
+    finally:
+        t.release()

@@ -87,6 +87,54 @@ def test_two_processes_one_pip(installation: Installation) -> None:
     assert len(installation.pip_calls()) == 1                    # o 2º esperou a trava e viu o commit novo
 
 
+LONG_RUNNING = """
+import json, os, time
+import rumbapy
+from rumbapy import _update, errors
+print("pronto", flush=True)
+go = os.environ["GO_FILE"]
+deadline = time.monotonic() + 60
+while not os.path.exists(go) and time.monotonic() < deadline:
+    time.sleep(0.05)
+_update._checked_at = None                       # TTL do open vencido (1 h / 12 h)
+try:
+    _update.ensure_latest("open")
+    print(json.dumps({"res": "sem UpdateRequired"}))
+except errors.UpdateRequired as exc:
+    print(json.dumps({"res": "UpdateRequired", "msg": exc.message, "info": list(_update.restart_info())}))
+"""
+
+
+def test_long_process_sees_update_by_other_process(installation: Installation) -> None:
+    """Kernel longo importou A; outro script atualiza o disco para B; a reconsulta do ``open`` pede reinício."""
+    go = installation.work / "go.flag"
+    proc = installation.popen(LONG_RUNNING, GO_FILE=str(go))
+    try:
+        assert proc.stdout is not None
+        assert proc.stdout.readline().strip() == "pronto"
+        installation.github.master = SHA_B
+        (installation.home / "update-state.json").unlink()      # o cache de 60 s (E7) dispensaria a consulta
+        other = installation.run()                            # o "outro script": instala B e pede para rodar de novo
+        assert other.returncode == 1 and "UpdateRequired: O RumbaPy foi atualizado para 2.0.0 (bbbbbbb)" in other.stderr
+        assert installation.installed_url().endswith(f"/archive/{SHA_B}.zip")      # type: ignore[union-attr]
+        info_before = len(installation.github.paths("info"))
+        go.write_text("1", encoding="utf-8")
+        out, err = proc.communicate(timeout=90)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=30)
+    assert proc.returncode == 0, err
+    result = json.loads(out.strip().splitlines()[-1])
+    assert result == {"res": "UpdateRequired", "info": [SHA_B, None],
+                      "msg": "Outro processo atualizou o RumbaPy. Este processo ainda usa a versão antiga; reinicie-o."}
+    assert len(installation.github.paths("info")) == info_before                # nem consultou o GitHub
+    assert len(installation.pip_calls()) == 1                                    # nem reinstalou
+    log = (installation.home / "logs" / "update.log").read_text(encoding="utf-8")
+    assert "update context=open mode=archive local=bbbbbbb remote=none result=restart-required" in log
+    assert "context=open mode=archive local=bbbbbbb remote=bbbbbbb result=up-to-date" not in log
+
+
 def test_cache_dispenses_second_query(installation: Installation) -> None:
     assert installation.run().returncode == 0
     assert installation.run().returncode == 0

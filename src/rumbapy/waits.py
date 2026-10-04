@@ -95,13 +95,16 @@ def wait_until(cond: Cond, *, snapshot: Callable[[], Screen], timeout: float, de
                error_checks: Sequence[Callable[[Screen], None]] = (), clock: Callable[[], float] = time.monotonic,
                sleep: Callable[[float], object] = time.sleep, fast_phase: float = FAST_PHASE,
                fast_poll: float = FAST_POLL, slow_poll: float = SLOW_POLL, host_lost_after: float = HOST_LOST_AFTER,
-               exc: type[WaitTimeout] = WaitTimeout, hint: str | None = None) -> Screen:
+               exc: type[WaitTimeout] = WaitTimeout, hint: str | None = None, cond_first: bool = False) -> Screen:
     """Faz polling de ``snapshot()`` até ``cond`` ser satisfeita; devolve a tela com ``match`` preenchido.
 
     ``match`` = o ``Cursor``/``str`` devolvido por ``cond`` (``None`` para ``True`` ou outros objetos). Prazo
     estourado -> ``exc(mensagem, hint=hint, screen=última tela, terminal=...)`` (``screen=None`` se
     ``hidden_unknown``). Host fora do ar por ``host_lost_after`` -> ``HostConnectionLost``, com ``delivery="unknown"``
     se a espera é a resposta de uma AID já enviada (``exc`` = ``NoHostResponse`` ou subclasse).
+
+    ``cond_first=True`` (só a compat ``RumbaClient.screen_load``, como a v0.1.5): ``cond`` é testada ANTES dos
+    ``error_checks`` — um texto esperado que já está na tela vence o detector de erro.
     """
     if not callable(cond) or not callable(snapshot) or not callable(describe):
         raise ParameterError.make(detalhe="wait_until: cond, snapshot e describe devem ser chamáveis.")
@@ -116,6 +119,10 @@ def wait_until(cond: Cond, *, snapshot: Callable[[], Screen], timeout: float, de
     while True:
         screen = snapshot()
         now = clock()
+        if cond_first:
+            early = cond(screen)
+            if _satisfied(early):
+                return dataclasses.replace(screen, match=early if isinstance(early, (str, Cursor)) else None)
         for check in checks:
             check(screen)
         if screen.oia.online:

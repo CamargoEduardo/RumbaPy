@@ -62,7 +62,7 @@ def world(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> World:
     monkeypatch.delenv("RUMBAPY_DEV", raising=False)
     monkeypatch.setenv("RUMBAPY_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(sys, "orig_argv", ["python", "script.py"])
-    for name in ("_restart_required", "_restart_message", "_restart_version", "_checked_at"):
+    for name in ("_restart_required", "_restart_message", "_restart_version", "_checked_at", "_seen_local"):
         monkeypatch.setattr(_update, name, None)
     monkeypatch.setattr(_update, "install_mode", w.install_mode)
     monkeypatch.setattr(_bootstrap, "remote_master_sha", w.remote_master_sha)
@@ -394,6 +394,97 @@ def test_open_ttl(world: World, monkeypatch: pytest.MonkeyPatch, interactive: bo
     world.calls.clear()
     _update.ensure_latest("open")
     assert ("remote" in world.calls) is queries
+
+
+# ------------------------------------------------------------------------------------------- outro processo atualizou
+
+OTHER = "Outro processo atualizou o RumbaPy. Este processo ainda usa a versão antiga; reinicie-o."
+
+
+def other_process_updated(world: World, *, with_cache: bool) -> None:
+    """Outro processo instalou o master novo (B) depois da 1ª checagem deste (que importou A); o TTL venceu."""
+    world.installed = SHA_B
+    world.remote = SHA_B
+    _update._checked_at = time.monotonic() - 12 * 3600 - 1      # monkeypatch do fixture restaura
+    if with_cache:                                               # o que o outro processo gravou há pouco (< 60 s)
+        _paths.write_json(_paths.update_state_path(), {"checked_at": time.time(), "context": "import",
+                                                       "mode": "archive", "local": SHA_B, "remote": SHA_B,
+                                                       "result": "updated", "version": "2.0.1"})
+    else:
+        _paths.update_state_path().unlink()
+
+
+@pytest.mark.parametrize("with_cache", [False, True])
+def test_reconsult_sees_other_process_update(world: World, with_cache: bool) -> None:
+    _update.ensure_latest("import")
+    other_process_updated(world, with_cache=with_cache)
+    before = state()
+    world.calls.clear()
+    with pytest.raises(UpdateRequired) as info:
+        _update.ensure_latest("open")
+    assert info.value.message == OTHER
+    assert world.calls == ["install_mode"]                       # nem GitHub, nem pip
+    assert state() == before                                     # update-state.json é do disco (certo): intocado
+    assert _update.restart_info() == (SHA_B, None)
+    log = _paths.update_log_path().read_text(encoding="utf-8")
+    assert "WARNING update context=open mode=archive local=bbbbbbb remote=none result=restart-required" in log
+    assert "result=up-to-date" not in log.split("context=open", 1)[1]
+    # daqui em diante: sempre a mesma mensagem, sem nova consulta (mesmo com force)
+    world.calls.clear()
+    for ctx, force in (("open", False), ("legacy", True)):
+        with pytest.raises(UpdateRequired) as again:
+            _update.ensure_latest(ctx, force=force)
+        assert again.value.message == OTHER
+    assert world.calls == []
+
+
+def test_reconsult_without_change_still_queries(world: World) -> None:
+    _update.ensure_latest("import")
+    _update._checked_at = time.monotonic() - 12 * 3600 - 1
+    _paths.update_state_path().unlink()
+    world.calls.clear()
+    _update.ensure_latest("open")
+    assert world.calls == ["install_mode", "remote"]
+    assert _update.restart_info() == (None, None)
+
+
+def test_reconsult_other_process_and_newer_master(world: World) -> None:
+    """Disco mudou (B) e o master já está em C: reiniciar basta; este processo não instala por cima."""
+    _update.ensure_latest("import")
+    other_process_updated(world, with_cache=False)
+    world.remote = "c" * 40
+    with pytest.raises(UpdateRequired) as info:
+        _update.ensure_latest("open")
+    assert info.value.message == OTHER and world.pip_shas == []
+
+
+def test_first_check_failed_then_other_process_fixed(world: World) -> None:
+    """1ª checagem sem rede (memória = A); outro processo instala B: a reconsulta pede reinício."""
+    world.remote = _bootstrap.BootstrapError("network", "info/refs: tempo esgotado")
+    with pytest.raises(UpdateCheckFailed):
+        _update.ensure_latest("import")
+    world.installed = SHA_B
+    world.remote = SHA_B
+    with pytest.raises(UpdateRequired) as info:
+        _update.ensure_latest("open")
+    assert info.value.message == OTHER
+
+
+def test_dev_mode_never_compares_disk(world: World) -> None:
+    world.mode = "dev"
+    _update.ensure_latest("import")
+    world.mode = "archive"                                       # nada foi visto no modo dev
+    _update._checked_at = None
+    _update.ensure_latest("open")
+    assert world.calls == ["install_mode", "install_mode", "remote"]
+
+
+def test_script_context_action_in_message(world: World) -> None:
+    _update.ensure_latest("import")
+    other_process_updated(world, with_cache=False)
+    with pytest.raises(UpdateRequired) as info:
+        _update.ensure_latest("import", force=True)
+    assert info.value.message == "Outro processo atualizou o RumbaPy. Rode o script de novo."
 
 
 # ------------------------------------------------------------------------------------------- isolamento

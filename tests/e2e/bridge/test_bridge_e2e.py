@@ -218,3 +218,44 @@ def test_doctor_probe_pings_live_worker_without_lease(env: Env) -> None:
 
 def test_protocol_constant_sanity() -> None:
     assert _protocol.PROTOCOL == 2 and _bridge.HELLO_TIMEOUT == _protocol.HELLO_ACK_TIMEOUT
+
+
+def test_close_on_exit_with_pending_evict_keeps_the_new_owner(env: Env) -> None:
+    """A.11 c / A.14: o dono A está ocioso no ``with`` quando outro script despeja e reabre (o aviso fica parado no
+    pipe de A). Ao sair do ``with``, o ``close_on_exit`` de A confere a instância com o worker e NÃO fecha o novo."""
+    from rumbapy import profiles, session as session_mod
+    from rumbapy._types import OpenInfo
+
+    a = env.bridge().get_worker("D", "owner")
+    env.remember(a.worker_pid)
+    result = a.connect()
+    assert result.connected
+    info = OpenInfo(launched=False, closed_instances=0, hwnd=result.hwnd, hwnd_pid=result.hwnd_pid,
+                    seconds_to_register=None, seconds_to_connect=0.0, rows=24, cols=80, via="attach")
+    closes: list[str] = []
+
+    class SpyLauncher:
+        def close_all(self, profile: Any, *, timeout: float = 15.0) -> int:
+            closes.append(profile.letter)
+            return 1
+
+    session_mod._set_factories(backend_factory=lambda p, py: None, user32_factory=lambda: None,
+                               launcher_factory=lambda u32, get: SpyLauncher())
+    other = env.bridge()                                            # "outro script": outra conexão com o worker
+    b = None
+    try:
+        with session_mod.Session(a, profiles.resolve("D"), info, close_on_exit=True) as t:
+            admin = other.get_worker("D", "admin")
+            assert admin.evict("open")["evicted_owner"] is not None
+            admin.release()
+            b = other.get_worker("D", "owner")
+            assert b.connect().connected
+            assert t.state == "ok"                                  # A ainda não leu o aviso
+        assert closes == [] and t.state == "replaced"
+        assert b.read(1, 1, 5).text is not None                     # B continua dono
+        assert env.registry()["owner"] is not None
+    finally:
+        session_mod._set_factories(backend_factory=None, user32_factory=None, launcher_factory=None)
+        if b is not None:
+            b.release()
+        a.release()

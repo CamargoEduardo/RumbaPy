@@ -163,3 +163,52 @@ def test_broken_role_in_legacy_shim_is_not_healed(tmp_path: Path, copy: Path) ->
     assert "SyntaxError" in done.stderr and "reparado" not in done.stderr
     log = tmp_path / "home" / "logs" / "update.log"
     assert not log.exists() or "heal:" not in log.read_text(encoding="utf-8")
+
+
+# ------------------------------------------------------------------------------------------- A.14 (integração)
+
+def test_second_import_after_build_id_changed_reloads_everything(tmp_path: Path, copy: Path) -> None:
+    with open(copy / "_backend.py", "a", encoding="utf-8") as fh:   # muda o BUILD_ID só na 1ª importação
+        fh.write("\nimport os as _o\n_p = _o.path.join(_o.path.dirname(__file__), 'zz_touch.json')\n"
+                 "if not _o.path.exists(_p):\n    open(_p, 'w').close()\n")
+    code = ("import sys, json\nout = []\n"
+            "try:\n    import rumbapy\nexcept Exception as exc:\n    out.append(type(exc).__name__)\n"
+            "out.append(sorted(n for n in sys.modules if n.startswith('rumbapy.')))\n"
+            "import rumbapy\nout.append(rumbapy._ROLE)\nprint(json.dumps(out))\n")
+    assert last_json(run(code, tmp_path, pythonpath=copy.parent)) == ["UpdateRequired", [], "user"]
+
+
+def test_client_log_is_on_after_import(tmp_path: Path) -> None:
+    code = ("import logging, rumbapy\nlogging.getLogger('rumbapy.session').warning('aviso-do-cliente')\n"
+            "from rumbapy import _log\n_log.flush_all()\nprint('ok')")
+    done = run(code, tmp_path)
+    assert done.returncode == 0, done.stderr
+    logs = list((tmp_path / "home" / "logs").glob("client-*.log"))
+    assert len(logs) == 1 and "aviso-do-cliente" in logs[0].read_text(encoding="utf-8")
+
+
+def test_worker_module_list_matches_the_worker() -> None:
+    import rumbapy
+    from rumbapy._worker import main
+
+    assert rumbapy._WORKER_MODULES == main.WORKER_MODULES
+
+
+@pytest.mark.parametrize("rel", ["_worker/engine.py", "_worker/server.py"])
+def test_broken_worker_module_goes_to_heal(tmp_path: Path, copy: Path, rel: str) -> None:
+    (copy / rel).write_text("def quebrado(:\n", encoding="utf-8")
+    done = run("import rumbapy", tmp_path, pythonpath=copy.parent)           # DEV=1: heal relança o original
+    assert done.returncode == 1 and "SyntaxError" in done.stderr
+    log = (tmp_path / "home" / "logs" / "update.log").read_text(encoding="utf-8")
+    assert "heal: o import do RumbaPy falhou (SyntaxError" in log
+
+
+def test_broken_main_goes_to_heal_only_in_the_cli_role(tmp_path: Path, copy: Path) -> None:
+    (copy / "__main__.py").write_text("def quebrado(:\n", encoding="utf-8")
+    user = run("import rumbapy\nprint('ok')", tmp_path, pythonpath=copy.parent)
+    assert user.returncode == 0 and user.stdout.strip() == "ok", user.stderr
+    cli = run("import sys\nsys.orig_argv = [sys.executable, '-m', 'rumbapy', 'version']\nimport rumbapy",
+              tmp_path, pythonpath=copy.parent)
+    assert cli.returncode == 1 and "SyntaxError" in cli.stderr
+    log = (tmp_path / "home" / "logs" / "update.log").read_text(encoding="utf-8")
+    assert "heal: o import do RumbaPy falhou (SyntaxError" in log

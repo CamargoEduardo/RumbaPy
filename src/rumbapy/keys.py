@@ -286,8 +286,9 @@ def tokenize_extra(s: str) -> list[Token]:
 
     ``"<<"`` é um ``<`` literal; ``>`` sozinho e ``@`` são texto comum (``encode_body`` escapa o ``@``). Dentro de
     ``<...>`` valem os nomes de ``Key.parse`` (``<PF3>``, ``<F3>``, ``<page down>``, ``<@3>``). Nome desconhecido ou
-    ``<`` sem ``>`` -> ``UndefinedKey``; a mensagem só cita o trecho se ele parecer um nome de tecla (curto), para
-    não expor dados digitados por engano.
+    ``<`` sem ``>`` -> ``UndefinedKey``; a mensagem só cita o trecho se ele parecer um nome de tecla (curto, sem outro
+    ``<`` dentro), para não expor dados digitados por engano. Limite: um dado como ``"ab<Entr>"`` não se distingue de
+    um erro de digitação e É citado; senhas vão com ``send_keys(..., secret=True)`` ou com ``<<``.
     """
     return _tokenize_extra(s, secret=False)
 
@@ -319,9 +320,10 @@ def _tokenize_extra(s: str, *, secret: bool) -> list[Token]:
             if secret:
                 raise UndefinedKey.make(x="<...>", sugestao="Confira os nomes entre '<' e '>' (ex.: <Enter>). "
                                         + _LT_HINT)
-            if _is_name(name):
+            if _is_name(name) and EXTRA_OPEN not in name:
                 # só cita o trecho se ele parece um nome de tecla digitado errado (<Pf33>); senão pode ser um dado
-                # (uma senha com '<' passada sem secret=True)
+                # (uma senha com '<' passada sem secret=True). Um trecho com outro '<' dentro ("<7kZp<Enter>": o '<'
+                # é da senha e o '>' é da tecla seguinte) é sempre dado: nunca é citado nem vira sugestão.
                 shown = f"<{name}>" if _close_name(name) is not None else "<...>"
                 raise UndefinedKey.make(x=shown, sugestao=_suggest(name, "<{}>") + " " + _LT_HINT)
             raise UndefinedKey.make(x=EXTRA_OPEN, sugestao="Feche o nome da tecla com '>' (ex.: <Enter>). " + _LT_HINT)

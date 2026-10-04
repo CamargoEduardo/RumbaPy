@@ -44,6 +44,9 @@ _restart_required: str | None = None      # variável de MÓDULO (nunca os.envir
 _restart_message: str | None = None
 _restart_version: str | None = None
 _checked_at: float | None = None          # time.monotonic() da última checagem bem-sucedida deste processo
+# (modo, commit) do disco na 1ª checagem deste processo = o código que está na memória. Numa reconsulta (TTL do
+# open), commit diferente no disco quer dizer que outro processo atualizou o RumbaPy: este tem de ser reiniciado.
+_seen_local: tuple[str, str | None] | None = None
 _guard = threading.RLock()
 _sleep = time.sleep                       # ponto de injeção dos testes
 
@@ -258,6 +261,31 @@ def _mark_checked() -> None:
     _checked_at = time.monotonic()
 
 
+def _other_process_message(context: str) -> str:
+    """Texto da B.7 (variante ``other_process``) com a ação do contexto no lugar do "Rode de novo." genérico."""
+    text = UpdateRequired.make("other_process").message
+    tail = "Rode de novo."
+    if text.endswith(tail):
+        text = text[: -len(tail)] + _action(context)
+    return text
+
+
+def _changed_on_disk(context: str, mode: str, local: str | None) -> bool:
+    """Registra o commit da 1ª checagem; nas seguintes, ``True`` se o disco mudou desde então (outro processo
+    instalou outra versão por cima: o código na memória deste processo ficou velho)."""
+    global _seen_local
+    if _seen_local is None:
+        _seen_local = (mode, local)
+        return False
+    seen = _seen_local[1]
+    if local == seen:
+        return False
+    # sem consulta ao GitHub (remote=none) e sem tocar no update-state.json: ele descreve o disco, que está certo
+    reason = f"outro processo atualizou o RumbaPy (este processo roda {_short(seen)})"
+    _record(context, mode, local, None, "restart-required", level=logging.WARNING, reason=reason)
+    return True
+
+
 def _remove_marker(path: Path) -> None:
     try:
         path.unlink()
@@ -398,6 +426,11 @@ def ensure_latest(context: str = "import", force: bool = False) -> None:
         if mode == "dev":
             _mark_checked()
             return
+        if _changed_on_disk(context, mode, local):
+            _restart_required = local or ""
+            _restart_message = _other_process_message(context)
+            _restart_version = None
+            raise UpdateRequired(_restart_message)
         if not force and _cache_valid(local):
             _mark_checked()
             return
@@ -427,7 +460,10 @@ def ensure_latest(context: str = "import", force: bool = False) -> None:
 # ------------------------------------------------------------------------------------------- consultas (CLI)
 
 def restart_info() -> tuple[str | None, str | None]:
-    """``(sha, versão)`` instalados por este processo (``(None, None)`` se nada foi instalado)."""
+    """``(sha, versão)`` instalados por este processo; se outro processo atualizou o disco, ``(sha do disco, None)``.
+
+    ``(None, None)`` se nada mudou.
+    """
     return _restart_required, _restart_version
 
 

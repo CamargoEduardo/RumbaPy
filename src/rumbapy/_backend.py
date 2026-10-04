@@ -334,3 +334,50 @@ class WorkerBackend:
             handle, self._handle = self._handle, None
         if handle is not None:
             self.bridge.release(handle)
+
+
+class ExistingAdmin:
+    """Conexão admin com um worker JÁ vivo da letra, para o ``close`` (E.4 passo 1: "não exige lease nem DLL").
+
+    Só ``evict``/``sessions``/``release``, direto no ``WorkerHandle``: nunca recicla nem sobe outro worker (um
+    ``WorkerBackend`` repetiria ``sessions`` depois de reciclar, o que carregaria a DLL só para conferir um close).
+    Use ``ExistingAdmin.find(letra)``: ``None`` se não houver worker vivo."""
+
+    def __init__(self, letter: str, bridge: Bridge, handle: WorkerHandle) -> None:
+        self.letter = letter
+        self._bridge = bridge
+        self._handle: WorkerHandle | None = handle
+
+    @classmethod
+    def find(cls, letter: str, *, python32: str | os.PathLike[str] | None = None,
+             bridge: Bridge | None = None) -> ExistingAdmin | None:
+        if bridge is None:
+            from . import _bridge                # tardio: _bridge importa este módulo
+
+            bridge = _bridge.default_bridge()
+        handle = bridge.find_handle(letter, "admin", python32=python32)
+        return None if handle is None else cls(letter, bridge, handle)
+
+    def __repr__(self) -> str:
+        handle = self._handle
+        return f"<ExistingAdmin {self.letter}{f' worker={handle.pid}' if handle is not None else ''}>"
+
+    def _live(self) -> WorkerHandle:
+        handle = self._handle
+        if handle is None or not handle.alive:
+            raise WorkerCrashed.make(L=self.letter, terminal=self.letter)
+        return handle
+
+    def evict(self, reason: str) -> dict:
+        return self._live().request("evict", {"reason": reason})
+
+    def sessions(self) -> list[SessionEntry]:
+        entries = self._live().request("sessions").get("sessions")
+        if not isinstance(entries, list):
+            raise ProtocolError.make(L=self.letter, detalhe="sessions sem lista", terminal=self.letter)
+        return [SessionEntry.from_wire(e) for e in entries]
+
+    def release(self) -> None:
+        handle, self._handle = self._handle, None
+        if handle is not None:
+            self._bridge.release(handle)

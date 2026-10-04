@@ -133,6 +133,21 @@ def test_tokenize_extra_does_not_quote_data() -> None:
         assert "egredo" not in str(info.value) and "senha" not in str(info.value)
 
 
+@pytest.mark.parametrize("pw", ["Q<7kZp", "ab<Tab9", "pa<ss", "x<y", "s3<Enter9", "a<b@c"])
+def test_tokenize_extra_never_quotes_password_before_a_valid_key(pw: str) -> None:
+    """Senha com '<' sem secret=True seguida de <Enter>: o trecho '<resto<Enter>' é dado, nunca citado (T-SEC-1)."""
+    with pytest.raises(UndefinedKey) as info:
+        tokenize_extra(f"A000000<Tab>{pw}<Enter>")
+    with pytest.raises(UndefinedKey) as fixed:
+        tokenize_extra("<")
+    # a mensagem é a fixa do '<' sem '>' (não depende de nenhum caractere da senha)
+    assert str(info.value) == str(fixed.value)
+    assert info.value.message.startswith("Tecla '<' desconhecida. Feche o nome da tecla com '>'")
+    tail = pw.split("<", 1)[1]
+    assert tail not in str(info.value) and f"<{tail}" not in str(info.value)
+    assert keys.tokenize_extra("<@<>x") == [Key.BACKSPACE, "x"]       # mnemônico com '<' continua valendo
+
+
 def test_tokenize_extra_rejects_non_str() -> None:
     with pytest.raises(ParameterError):
         tokenize_extra(Key.ENTER)  # type: ignore[arg-type]

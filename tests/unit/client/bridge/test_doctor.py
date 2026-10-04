@@ -124,3 +124,65 @@ def test_doctor_reads_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     info = _bridge.Bridge().probe("D")
     assert info == {"letter": "D", "registered": False, "alive": False}
     assert not (tmp_path / "authkey.bin").exists() and not (tmp_path / "run").exists()
+
+
+# ------------------------------------------------------------- o estado do update é lido uma vez (H.2)
+
+def test_update_status_read_once_per_report() -> None:
+    calls: list[int] = []
+
+    def status() -> dict[str, Any]:
+        calls.append(1)
+        return {"mode": "archive", "commit": "b" * 40, "error": None, "last_check": None}
+
+    report = _doctor.collect(probes=probes(update_status=status))   # GitHub consultado (RUMBAPY_TEST_GITHUB)
+    assert len(calls) == 1
+    assert report["GitHub"].status == "aviso"                        # o commit memoizado chega ao item GitHub
+    _doctor.collect(probes=probes(update_status=status))
+    assert len(calls) == 2                                           # memo por relatório, não global
+
+
+def test_update_status_failure_memoized_and_contained() -> None:
+    calls: list[int] = []
+
+    def status() -> dict[str, Any]:
+        calls.append(1)
+        raise OSError("estado ilegível")
+
+    report = _doctor.collect(probes=probes(update_status=status))
+    assert len(calls) == 1
+    assert report["RumbaPy"].status == "aviso"
+    assert report["GitHub"].status == "ok"
+
+
+def test_dev_doctor_does_not_repeat_auto_update_notice(monkeypatch: pytest.MonkeyPatch,
+                                                       capsys: pytest.CaptureFixture[str]) -> None:
+    """``RUMBAPY_DEV=1 python -m rumbapy doctor``: o aviso sai uma vez (do ``ensure_latest("cli")``), não três."""
+    from rumbapy import _update
+
+    monkeypatch.setenv("RUMBAPY_DEV", "1")
+    monkeypatch.delenv("RUMBAPY_QUIET", raising=False)
+    warnings: list[str] = []
+    real_log_line = _update._bootstrap.log_line
+
+    def log_line(text: str, level: str = "INFO") -> None:
+        if level == "WARNING" and "AUTO-UPDATE DESLIGADO" in text:
+            warnings.append(text)
+        real_log_line(text, level)
+
+    monkeypatch.setattr(_update._bootstrap, "log_line", log_line)
+    assert _update.install_mode() == ("dev", None)                  # o que o ensure_latest("cli") faz uma vez
+    report = _doctor.collect(probes=probes(update_status=_doctor._update_status))
+    err = capsys.readouterr().err
+    assert err.count("AUTO-UPDATE DESLIGADO") == 1
+    assert len(warnings) == 1
+    assert report["RumbaPy"].status == "ok" and "instalação dev" in report["RumbaPy"].detail
+
+
+def test_update_status_outside_dev_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rumbapy import _update
+
+    monkeypatch.delenv("RUMBAPY_DEV", raising=False)
+    sentinel = {"mode": "archive", "commit": "c" * 40, "error": None, "last_check": None}
+    monkeypatch.setattr(_update, "status", lambda: sentinel)
+    assert _doctor._update_status() is sentinel

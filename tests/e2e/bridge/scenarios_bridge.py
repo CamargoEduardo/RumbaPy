@@ -8,6 +8,7 @@ O watchdog do worker é encurtado só aqui (``DEFAULT_LIMIT``), para os testes n
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from tests.fakes.fake_ehllapi import FakeEhllapi
 from tests.fakes import scenarios
@@ -82,11 +83,43 @@ def slow_stop() -> FakeEhllapi:
     from tests.fakes.fake_ehllapi import _FakeFunction
 
     fake = scenarios.cics_login()
-    original = fake.WD_ResetSystem
+    original: Any = fake.WD_ResetSystem
 
     def slow(h: object) -> int:
         time.sleep(STOP_DELAY_S)
         return original._fn(h)
 
-    fake.WD_ResetSystem = _FakeFunction(slow, "WD_ResetSystem", fake)
+    setattr(fake, "WD_ResetSystem", _FakeFunction(slow, "WD_ResetSystem", fake))
     return fake
+
+
+# ------------------------------------------------------------------------------------------- T-SEC-1 (J.5)
+# Senhas únicas (não aparecem em nenhum outro lugar do pacote nem dos dublês): o teste de segurança procura cada uma
+# em todo JSON trafegado, nos logs e nos textos de exceção. ``SECRET_LT`` tem ``<`` (o tokenizer da sintaxe extra).
+
+SECRET = "Qx7Kp2zW"
+SECRET_LT = "Qx7<Kp2W"
+WRONG = "Zt4Vn8Lm"
+SLOW_HOST_S = 0.6
+
+
+def secret_cics() -> FakeEhllapi:
+    """``cics_login`` cuja senha válida é ``SECRET``."""
+    return scenarios.cics_login(password=SECRET)
+
+
+def secret_cics_lt() -> FakeEhllapi:
+    """``cics_login`` cuja senha válida é ``SECRET_LT`` (com ``<``)."""
+    return scenarios.cics_login(password=SECRET_LT)
+
+
+def secret_cics_slow() -> FakeEhllapi:
+    """``secret_cics`` com o host levando ``SLOW_HOST_S`` s para responder a cada AID."""
+    fake = scenarios.cics_login(password=SECRET)
+    fake.sessions["D"].response_delay = SLOW_HOST_S
+    return fake
+
+
+def secret_ims() -> FakeEhllapi:
+    """``ims_login`` (IMS_A, 32x80) cuja senha válida é ``SECRET``."""
+    return scenarios.ims_login(password=SECRET)

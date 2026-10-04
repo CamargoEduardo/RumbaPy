@@ -324,3 +324,153 @@ def test_wait_timeout_does_not_make_uncertain(table):
         t.wait_text("NUNCA", timeout=0.1)
     assert t.state == "ok"
     assert send_calls(t._backend.fake) == []
+
+
+# ------------------------------------------------------------------------------------------- falha do worker pós-AID
+
+def _worker_error(kind: str):
+    from rumbapy.errors import ProtocolError, WorkerCrashed, WorkerHung
+
+    if kind == "hung":
+        return WorkerHung.make(funcao="WD_CopyPS", s=2, terminal="D")
+    if kind == "crashed":
+        return WorkerCrashed.make(L="D", terminal="D")
+    return ProtocolError.make(L="D", detalhe="lixo no canal", terminal="D")
+
+
+@pytest.mark.parametrize("kind", ["hung", "crashed", "protocol"])
+def test_worker_failure_after_aid_is_unknown_and_uncertain(table, monkeypatch, kind):
+    t, backend, fake = table
+    real_send, real_snapshot = backend.send, backend.snapshot
+    state = {"sent": False, "failed": False}
+
+    def send(chunks, **kw):
+        result = real_send(chunks, **kw)
+        if chunks == ["@E"]:
+            state["sent"] = True
+        return result
+
+    def snapshot(**kw):
+        if state["sent"] and not state["failed"]:
+            state["failed"] = True
+            raise _worker_error(kind)
+        return real_snapshot(**kw)
+
+    monkeypatch.setattr(backend, "send", send)
+    monkeypatch.setattr(backend, "snapshot", snapshot)
+    with pytest.raises(Exception) as info:
+        t.enter()
+    exc = info.value
+    assert exc.delivery == "unknown"
+    assert t.state == "uncertain"
+    if kind != "protocol":
+        assert exc.message.endswith("Não sei se a entrada chegou ao host.")
+    with pytest.raises(SessionUncertain):
+        t.enter()
+    assert aids(fake) == ["ENTER"]
+    t.wait_text("ATUALIZADO 1", 23, 7)
+    assert t.state == "ok"
+
+
+def test_not_connected_after_aid_keeps_uncertain_after_reconnect(table, monkeypatch):
+    t, backend, fake = table
+    real_send, real_snapshot = backend.send, backend.snapshot
+    state = {"sent": False, "failed": False}
+
+    def send(chunks, **kw):
+        result = real_send(chunks, **kw)
+        state["sent"] = state["sent"] or chunks == ["@E"]
+        return result
+
+    def snapshot(**kw):
+        if state["sent"] and not state["failed"]:
+            state["failed"] = True
+            raise NotConnected.make(L="D", terminal="D", rc=1)
+        return real_snapshot(**kw)
+
+    monkeypatch.setattr(backend, "send", send)
+    monkeypatch.setattr(backend, "snapshot", snapshot)
+    with pytest.raises(NotConnected) as info:
+        t.enter()
+    assert info.value.delivery == "unknown" and t.state == "uncertain" and not t.connected
+    t.reconnect()
+    assert t.state == "uncertain"                        # reconectar não confirma a AID
+    t.acknowledge()
+    assert t.state == "ok" and aids(fake) == ["ENTER"]
+
+
+# ------------------------------------------------------------------------------------------- close com estado velho
+
+class _ReplacedOnStatus:
+    """Envolve um backend: ``status`` levanta ``SessionReplaced`` (evict parado no pipe / hwnd mudou)."""
+
+    def __init__(self, backend, error=None):
+        self._inner = backend
+        self._error = error
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def status(self):
+        raise self._error or SessionReplaced.make(L="D", terminal="D")
+
+
+def _stale_open(monkeypatch, error=None):
+    launcher = FakeLauncher(scenarios.cics_login())
+    original = launcher._opened
+
+    def opened(via):
+        result = original(via)
+        return dataclasses.replace(result, backend=_ReplacedOnStatus(result.backend, error))
+
+    launcher._opened = opened                              # type: ignore[method-assign]
+    monkeypatch.setattr(session_mod, "_ensure_latest", lambda: None)
+    session_mod._set_factories(backend_factory=lambda profile, py32: None, user32_factory=lambda: None,
+                               launcher_factory=lambda u32, get: launcher)
+    return launcher
+
+
+def test_close_with_stale_state_does_not_close_the_new_instance(monkeypatch):
+    launcher = _stale_open(monkeypatch)
+    try:
+        t = session_mod.open("D")
+        assert t.state == "ok"
+        with pytest.raises(SessionReplaced):
+            t.close()
+        assert t.state == "replaced" and launcher.closed == 0
+        assert [c for c, _ in launcher.calls] == ["open"]
+    finally:
+        session_mod._set_factories(backend_factory=None, user32_factory=None, launcher_factory=None)
+
+
+@pytest.mark.parametrize("error", ["replaced", "in_use"])
+def test_close_on_exit_with_stale_state_skips(monkeypatch, caplog, error):
+    import logging
+    from rumbapy.errors import TerminalInUse
+
+    exc = None if error == "replaced" else TerminalInUse.make("rc", L="D", extra="", rc=11, terminal="D")
+    launcher = _stale_open(monkeypatch, exc)
+    try:
+        with caplog.at_level(logging.INFO, logger="rumbapy.session"):
+            with session_mod.open("D", close_on_exit=True) as t:
+                pass                                       # nenhuma exceção sai do with
+        assert launcher.closed == 0
+        assert t.state == ("replaced" if error == "replaced" else "ok")
+        assert "close_on_exit ignorado" in caplog.text
+        assert not t._hold.active
+    finally:
+        session_mod._set_factories(backend_factory=None, user32_factory=None, launcher_factory=None)
+
+
+def test_close_in_use_raises_and_keeps_state(monkeypatch):
+    from rumbapy.errors import TerminalInUse
+
+    launcher = _stale_open(monkeypatch, TerminalInUse.make("rc", L="D", extra="", rc=11, terminal="D"))
+    try:
+        t = session_mod.open("D")
+        t.release()
+        with pytest.raises(TerminalInUse):
+            t.close()
+        assert launcher.closed == 0 and t.state == "ok" and not t._hold.active
+    finally:
+        session_mod._set_factories(backend_factory=None, user32_factory=None, launcher_factory=None)

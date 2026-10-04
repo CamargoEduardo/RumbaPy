@@ -4,7 +4,9 @@ Códigos de saída: 0 = ok; 1 = erro (mensagem em português, sem traceback); 2 
 ser atualizado e o comando precisa ser repetido; 130 = Ctrl+C.
 
 No papel ``cli`` a checagem obrigatória do update é feita aqui (``ensure_latest(context="cli")``) antes de qualquer
-comando que fale com o terminal; ``version`` só lê o estado local (não consulta a rede).
+comando que fale com o terminal; ``version`` só lê o estado local (não consulta a rede). Se a checagem não alcança o
+GitHub (``UpdateCheckFailed``), ``close`` e ``update`` param com 1, mas o ``doctor`` (que não fala com o terminal)
+mostra a falha como item ``[FALHA] Update obrigatório`` e roda o diagnóstico inteiro, saindo com 1.
 """
 # ruff: noqa: I001
 from __future__ import annotations
@@ -89,10 +91,17 @@ def _cmd_update() -> int:
     return EXIT_OK
 
 
-def _cmd_doctor(verbose: bool) -> int:
+def _cmd_doctor(verbose: bool, update_failure: BaseException | None = None) -> int:
     import rumbapy
 
+    if update_failure is not None:
+        # sem rede/VPN o doctor é justamente o que mais ajuda: a falha da checagem vira um item e o resto roda
+        from rumbapy._doctor import sanitize
+
+        _out(f"[FALHA] Update obrigatório: {sanitize(str(update_failure))}")
     report = rumbapy.doctor(verbose=verbose)
+    if update_failure is not None:
+        return EXIT_ERROR
     return EXIT_OK if getattr(report, "ok", True) else EXIT_ERROR
 
 
@@ -113,14 +122,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_version()
         if args.command == "update":
             return _cmd_update()
+        update_failure: errors.UpdateCheckFailed | None = None
         try:
             _update.ensure_latest(context="cli")
         except errors.UpdateRequired:
             sha, version = _update.restart_info()
             _err(f"RumbaPy atualizado para {version or '?'} ({_short(sha)}). Rode o comando de novo.")
             return EXIT_RERUN
+        except errors.UpdateCheckFailed as exc:
+            if args.command != "doctor":           # close continua bloqueado sem a checagem (A.9 l)
+                raise
+            update_failure = exc
         if args.command == "doctor":
-            return _cmd_doctor(args.verbose)
+            return _cmd_doctor(args.verbose, update_failure)
         return _cmd_close(args.terminal)
     except errors.RumbaError as exc:
         _err(str(exc))

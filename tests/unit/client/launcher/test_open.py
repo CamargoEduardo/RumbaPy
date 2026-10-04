@@ -102,6 +102,26 @@ def test_reuse_with_broken_instance_falls_back_to_open(world: World, notices: li
     assert notices and "reaproveitar" in notices[0]
 
 
+def test_reuse_with_instance_leased_by_other_script_propagates(world: World, notices: list[str]) -> None:
+    """B.2: reuse=True com a única instância em uso por outro script (lease) não a fecha: ``TerminalInUse``."""
+    win = world.add_launcher_window()
+    world.owner_error = TerminalInUse.make("lease", L="D", pid=4321, script="outro.py", hora="10:00", terminal="D")
+    with pytest.raises(TerminalInUse) as info:
+        world.launcher().open("D", reuse=True, timeout=90)
+    assert "4321" in info.value.message
+    assert world.user32.windows[win.hwnd].alive and world.user32_calls("post_close") == []
+    assert world.spawned == [] and not notices
+    assert ("backend", "admin", "evict") not in world.timeline
+
+
+def test_reuse_with_rc11_still_falls_back_to_open(world: World, notices: list[str]) -> None:
+    """rc 11 (outro programa HLLAPI, ex. o servidor da v0.1.5) continua no fallback 'fechar e abrir'."""
+    world.add_launcher_window()
+    world.owner.fail["connect"] = [TerminalInUse.make("rc", L="D", extra="", rc=11, terminal="D")]
+    opened = world.launcher().open("D", reuse=True, timeout=90)
+    assert opened.info.via == "launcher" and notices and "reaproveitar" in notices[0]
+
+
 def test_launcher_exit_code_zero_is_not_a_failure(world: World) -> None:
     plan = standard_plan()
 
@@ -379,15 +399,30 @@ def test_admin_that_is_also_the_owner_is_not_released(world: World) -> None:
 
 
 def test_reuse_slow_first_screen_propagates_and_keeps_the_window(world: World) -> None:
-    """Conectou no reuse, mas a 1ª tela não estabiliza: ``LaunchTimeout`` com o prazo inteiro, janela intacta."""
-    blank = FakeScreen(lines=[""] * 24, name="blank")
-    win = world.add_launcher_window(screen=blank)
+    """Conectou no reuse, mas a 1ª tela não fica pronta (teclado sempre bloqueado): ``LaunchTimeout`` com o prazo
+    inteiro, janela intacta. (Tela em branco PRONTA não é lentidão no reuse: ver o teste seguinte.)"""
+    win = world.add_launcher_window()
+    world.fake.sessions["D"].inhibited = True
     with pytest.raises(LaunchTimeout) as info:
         world.launcher().open("D", reuse=True, timeout=60)
     assert info.value.details["phase"] == "first_screen"
     assert world.clock.now - 1000.0 >= 60                              # prazo D, não 10 s
     assert world.user32.windows[win.hwnd].alive and world.user32_calls("post_close") == []
     assert world.spawned == [] and world.owner.released == 1
+
+
+def test_reuse_with_blank_ready_screen_returns_without_closing(world: World) -> None:
+    """A.10 (E.5 passo 2): CICS depois de CLEAR — tela toda em branco, online e pronta — é uma 1ª tela válida."""
+    blank = FakeScreen(lines=[""] * 24, name="blank")
+    win = world.add_launcher_window(screen=blank)
+    start = world.clock.now
+    opened = world.launcher().open("D", reuse=True, timeout=60)
+    assert opened.info.via == "reuse" and opened.info.hwnd == win.hwnd
+    assert opened.screen is not None and not opened.screen.text.strip()
+    assert world.clock.now - start < 5                                  # nem perto do prazo
+    assert world.clock.now - start >= 1.0                               # branco: 1 s de estabilidade
+    assert world.user32.windows[win.hwnd].alive and world.user32_calls("post_close") == []
+    assert world.spawned == []
 
 
 def test_launched_entry_without_created_is_ignored(world: World) -> None:

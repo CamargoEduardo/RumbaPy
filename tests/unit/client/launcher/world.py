@@ -3,8 +3,8 @@
 
 * ``Clock``: relógio injetável (``clock=`` / ``sleep=`` do ``Launcher``); ``sleep`` avança o tempo e dispara os eventos
   agendados com ``at``.
-* ``World``: o "Windows" (``user32``), o "RUMBA" (``fake``) e os dois ``Backend`` (admin e dono) sobre o mesmo fake,
-  mais um ``spawn`` falso que agenda o aparecimento da janela do Web Launcher e o registro da letra.
+* ``World``: o "Windows" (``user32``), o "RUMBA" (``fake``) e os dois ``Backend`` (admin e dono) sobre o MESMO
+  ``Engine`` (``InProcessBackend(lease=True)``: o ``evict`` despeja o dono, como no worker real), mais um ``spawn`` falso que agenda o aparecimento da janela do Web Launcher e o registro da letra.
 * ``timeline``: chamadas de ``user32`` e de ``Backend`` na ordem em que aconteceram (para "evict antes do WM_CLOSE").
 """
 # ruff: noqa: I001
@@ -129,6 +129,7 @@ class RecordingBackend:
     def release(self) -> None:
         self.timeline.append(("backend", self.mode, "release"))
         self.released += 1
+        self.inner.release()                         # devolve o lease do "worker" (modelo do WorkerServer)
 
 
 @dataclass
@@ -167,8 +168,10 @@ class World:
         self.user32 = TimelineUser32(self.timeline, clock=self.clock, close_delay=self.close_delay)
         self.user32.on_destroy.append(self._unregister)
         self.fake = ClockedEhllapi(self.clock)
-        self.admin = RecordingBackend(InProcessBackend(self.fake, "D"), "admin", self.timeline)
-        self.owner = RecordingBackend(InProcessBackend(self.fake, "D"), "owner", self.timeline)
+        # um só "worker": admin e dono dividem o Engine (a conexão HLLAPI é por processo) e o evict despeja o dono
+        admin = InProcessBackend(self.fake, "D", mode="admin", lease=True)
+        self.admin = RecordingBackend(admin, "admin", self.timeline)
+        self.owner = RecordingBackend(InProcessBackend(self.fake, "D", share=admin), "owner", self.timeline)
         self._pids = itertools.count(5000)
         self._hwnds = itertools.count(0x00B1_0000, 0x10)
         self.session_hwnd: dict[str, int] = {}

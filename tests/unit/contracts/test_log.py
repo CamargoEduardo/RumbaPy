@@ -68,14 +68,19 @@ def test_safe_rotating_handler_ignores_permission_error(tmp_path: Path, monkeypa
 @pytest.fixture
 def client_logging(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
     monkeypatch.setenv("RUMBAPY_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(_log, "_client_handler", None)
     logger = logging.getLogger("rumbapy")
+    previous = _log._client_handler              # o import do pacote já ligou o log do cliente (A.14)
+    if previous is not None:
+        logger.removeHandler(previous)
+    monkeypatch.setattr(_log, "_client_handler", None)
     old_level = logger.level
     yield tmp_path / "home" / "logs"
     handler = _log._client_handler
     if handler is not None:
         logger.removeHandler(handler)
         handler.close()
+    if previous is not None:
+        logger.addHandler(previous)
     logger.setLevel(old_level)
 
 

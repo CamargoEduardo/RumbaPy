@@ -272,7 +272,12 @@ class NotConnected(TerminalError):
 
 
 class LaunchFailed(TerminalError):
-    templates = {"default": "O Host Access Web Launcher terminou com código {n} antes de registrar {L}."}
+    # "spawn": o Windows recusou criar o processo (política/AppLocker, arquivo sumiu...): ``motivo`` já sanitizado
+    templates = {
+        "default": "O Host Access Web Launcher terminou com código {n} antes de registrar {L}.",
+        "spawn": "Não consegui executar o {o_que} ({motivo}).",
+    }
+    hints = {"spawn": "confira se o RUMBA está instalado e se a política da empresa permite executá-lo."}
 
 
 class LaunchTimeout(TerminalError, TimeoutError):

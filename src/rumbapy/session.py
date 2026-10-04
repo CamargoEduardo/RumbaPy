@@ -27,7 +27,7 @@ from typing import Any, Literal
 
 from .errors import (FieldNotFound, HostBusy, NoHostResponse, NotConnected, ParameterError, ProtectedField,
                      RecipeNotAvailable, RumbaError, SessionReplaced, SessionUncertain, TerminalNotOpen, Truncated,
-                     WaitTimeout, HostConnectionLost)
+                     WaitTimeout, HostConnectionLost, RecipeError, TerminalInUse, EncodingError)
 from ._types import FieldRead, OpenInfo, Profile, ReadResult, WindowInfo
 from ._user32 import SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, User32
 from .screen import Cursor, Screen
@@ -63,6 +63,7 @@ OMITTED = "<conteúdo omitido>"      # texto de tela que não pode ir a mensagen
 NO_RESPONSE_HINT = ("NÃO repita a tecla: confira a tela (print(e.screen)) e reancore com t.wait_text/t.wait_any "
                     "(ou t.acknowledge()).")
 _READ_BUSY_HINT = "espere o host liberar (t.wait_ready()) e leia de novo."
+INPUT_UNKNOWN = "Não sei se a entrada chegou ao host."   # = sufixo das variantes "input" (WorkerCrashed/WorkerHung)
 
 
 # ------------------------------------------------------------------------------------------- utilidades
@@ -128,6 +129,11 @@ def _g8(screen: Screen) -> str:
 
 def _same(a: Screen, b: Screen) -> bool:
     return a.text == b.text and a.cursor == b.cursor
+
+
+def _hidden_attr(attr: int) -> bool:
+    """Atributo 3270 com intensidade ``11`` (não exibido: senha) — a mesma regra do worker (``_worker.mask``)."""
+    return (int(attr) >> 2) & 3 == 3
 
 
 def _quoted(value: str | re.Pattern[str]) -> str:
@@ -513,6 +519,34 @@ class Session:
             return
         if self.state == "replaced":
             raise SessionReplaced.make(L=self.terminal, terminal=self.terminal)
+        self._confirm_instance()
+        self._close_now()
+
+    def _confirm_instance(self) -> None:
+        """Antes de fechar (A.11 c / A.14): confirma com o worker, por uma op barata com ``checks_hwnd``
+        (``status``), que esta Session ainda é a dona da MESMA instância.
+
+        Um ``evict`` parado no pipe (outro script reabriu a letra) ou um hwnd diferente -> ``SessionReplaced`` (a
+        sessão vira ``replaced``); outro script com o lease -> ``TerminalInUse``. Nos dois casos nada é fechado.
+        ``NotConnected``/``TerminalNotOpen`` (instância já ausente) e falhas do processo auxiliar seguem para o
+        fechamento (``rumbapy.close`` não depende do worker). Resta uma janela TOCTOU estreita e inevitável entre esta
+        sonda e o ``close_all``.
+        """
+        if not self._connected:
+            return
+        was_active = self._hold.active
+        try:
+            _acquire(self._hold)
+            self._call(self._backend.status)
+        except (SessionReplaced, TerminalInUse):
+            if not was_active:
+                _drop(self._hold)                    # volta ao estado anterior (lease devolvido)
+            raise
+        except RumbaError as exc:
+            logger.info("close %s: conferência da instância falhou (%s); fechando assim mesmo", self.terminal,
+                        type(exc).__name__)
+
+    def _close_now(self) -> None:
         try:
             close(self.terminal)
         finally:
@@ -526,12 +560,22 @@ class Session:
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         """``release()``; com ``close_on_exit``, ``close()``. Nunca mascara a exceção que estiver saindo do ``with``."""
         try:
-            self.release()
-            if self.close_on_exit and self.state == "replaced":
-                # outra open() substituiu a instância: fechar agora derrubaria o terminal NOVO (e o lease alheio)
-                logger.info("saída do with no terminal %s: sessão substituída, close_on_exit ignorado", self.terminal)
-            elif self.close_on_exit and self.state != "closed":
-                self.close()
+            try:
+                if self.close_on_exit and self.state == "replaced":
+                    # outra open() substituiu a instância: fechar agora derrubaria o terminal NOVO (e o lease alheio)
+                    logger.info("saída do with no terminal %s: sessão substituída, close_on_exit ignorado",
+                                self.terminal)
+                elif self.close_on_exit and self.state != "closed":
+                    try:
+                        self._confirm_instance()         # ANTES do release: o lease ainda é desta Session
+                    except (SessionReplaced, TerminalInUse) as stale:
+                        # a instância é de outro script agora (evict ainda não lido / lease alheio): não fecha
+                        logger.info("saída do with no terminal %s: %s, close_on_exit ignorado", self.terminal,
+                                    type(stale).__name__)
+                    else:
+                        self._close_now()
+            finally:
+                self.release()                           # sem efeito se o close já devolveu o lease
         except Exception as cleanup:
             if exc_type is None:
                 raise
@@ -556,9 +600,11 @@ class Session:
             self._guard_connected()
             return self._snap(_bool("fields", fields))
 
-    def _read_raw(self, row: int, col: int, length: int) -> ReadResult:
-        """``read`` completo (``nul_at``/``nul_tail`` para a compat); com ``busy`` repete até ``timeout``."""
+    def _read_raw(self, row: int, col: int, length: int, *, timeout: float | None = None) -> ReadResult:
+        """``read`` completo (``nul_at``/``nul_tail`` para a compat); com ``busy`` repete até ``timeout``
+        (``None`` = ``Session.timeout``)."""
         self._guard_connected()
+        limit = self._timeout(timeout)
         pos = self._pos(row, col)
         _codec.check_span(pos, _int("length", length), self.rows, self.cols)
         start = self._clock()
@@ -567,10 +613,10 @@ class Session:
             if not result.busy:
                 return result
             elapsed = self._clock() - start
-            if elapsed >= self.timeout:
+            if elapsed >= limit:
                 raise HostBusy.make(rc=4, function="WD_CopyPSToString", terminal=self.terminal,
                                     hint=_READ_BUSY_HINT, details={"waited_s": round(elapsed, 3)})
-            self._sleep(min(waits.poll_interval(elapsed), max(0.0, self.timeout - elapsed)))
+            self._sleep(min(waits.poll_interval(elapsed), max(0.0, limit - elapsed)))
 
     def read(self, row: int, col: int, length: int) -> str:
         """Exatamente ``length`` caracteres a partir de ``(row, col)`` (NUL vira espaço; campo oculto em branco)."""
@@ -603,6 +649,10 @@ class Session:
 
     def _field_room(self, row: int, col: int) -> int:
         """Quantas posições de dados restam no campo desprotegido a partir de ``(row, col)``."""
+        return self._field_space(row, col)[0]
+
+    def _field_space(self, row: int, col: int) -> tuple[int, bool]:
+        """``(posições de dados restantes no campo desprotegido a partir de (row, col), campo oculto?)``."""
         pos = self._pos(row, col)
         found: FieldRead = self._call(self._backend.read_field, row, col)
         if found.attr & 0x20:
@@ -613,7 +663,17 @@ class Session:
             if found.length == 0:
                 raise FieldNotFound.make(r=row, c=col, terminal=self.terminal)
             raise ProtectedField.make(r=row, c=col, terminal=self.terminal)
-        return found.length - offset
+        return found.length - offset, _hidden_attr(found.attr)
+
+    def _hidden_at(self, row: int, col: int) -> bool:
+        """O campo em ``(row, col)`` é oculto (senha)? Na dúvida (falha ao ler o atributo) responde ``True``."""
+        try:
+            found: FieldRead = self._call(self._backend.read_field, row, col)
+        except FieldNotFound:
+            return False                          # tela não formatada: não há campo oculto
+        except RumbaError:
+            return True
+        return _hidden_attr(found.attr)
 
     def write(self, row: int, col: int, text: str, *, secret: bool = False,
               errors: Literal["strict", "replace"] = "strict") -> Session:
@@ -626,7 +686,13 @@ class Session:
             secret = _bool("secret", secret)
             self._guard_input()
             pos = self._pos(row, col)
-            data = self._encode(text, secret=secret, errors=errors)
+            try:
+                data = self._encode(text, secret=secret, errors=errors)
+            except EncodingError:
+                # campo oculto (senha) sem secret=True (ex.: compat copy_string_to_ps): a mensagem não cita o caractere
+                if secret or not self._hidden_at(row, col):
+                    raise
+                data = self._encode(text, secret=True, errors=errors)
             if not data:
                 raise ParameterError.make(detalhe="Texto vazio: nada para escrever (para apagar um campo use "
                                                   "t.fill(row, col, '')).")
@@ -646,8 +712,11 @@ class Session:
                 raise ParameterError.make(detalhe=f"align deve ser 'left' ou 'right' (recebi {align!r}).")
             self._guard_input()
             self._pos(row, col)
+            if not isinstance(text, str):
+                raise ParameterError.make(detalhe=f"O texto deve ser str (recebi {type(text).__name__}).")
+            room, hidden = self._field_space(row, col)
+            secret = secret or hidden               # campo oculto é secreto pelo atributo (A.9 g): nem o tamanho
             data = self._encode(text, secret=secret, errors=errors)
-            room = self._field_room(row, col)
             if len(data) > room:
                 if secret:
                     raise Truncated.make("secret", r=row, c=col, rc=6, delivery="none", terminal=self.terminal)
@@ -721,11 +790,53 @@ class Session:
 
         try:
             return waits.wait_until(answered, snapshot=self._snap, timeout=limit, describe=describe,
-                                    error_checks=self.error_checks, clock=self._clock, sleep=self._sleep,
+                                    error_checks=self._checks_after_aid(pre), clock=self._clock, sleep=self._sleep,
                                     exc=NoHostResponse, hint=NO_RESPONSE_HINT)
         except KeyboardInterrupt:
             self._mark_uncertain()                     # a AID já saiu: não sei se o host respondeu
             raise
+        except RumbaError as exc:
+            self._aid_wait_failed(exc)
+            raise
+
+    def _checks_after_aid(self, pre: Screen) -> list[Callable[[Screen], None]]:
+        """``error_checks`` da espera pós-AID (A.14): se a tela ``pre`` JÁ mostra o erro (ex.: CLEAR/PF3 para sair do
+        "E R R O   G R A V E"), telas com o mesmo texto de ``pre`` ainda não são resposta e não levantam.
+
+        Com ``pre`` limpa os checks valem como estão: uma resposta nova com erro é acusada no 1º snapshot. Se o host
+        reenviar a MESMA tela de erro, a AID volta sem ``HostError`` e a próxima espera de conteúdo acusa o erro.
+        """
+        checks = list(self.error_checks)
+        if not checks:
+            return checks
+        try:
+            for check in checks:
+                check(pre)
+        except Exception:
+            def skip_pre(check: Callable[[Screen], None]) -> Callable[[Screen], None]:
+                def wrapped(s: Screen) -> None:
+                    if s.text != pre.text:
+                        check(s)
+                return wrapped
+            return [skip_pre(check) for check in checks]
+        return checks
+
+    def _aid_wait_failed(self, exc: RumbaError) -> None:
+        """Falha na espera DEPOIS de a AID sair (processo auxiliar travou/caiu, canal inválido, sem conexão...): a
+        AID pode ter sido processada, então ``delivery`` vira ``unknown`` e a sessão fica ``uncertain`` (B.3).
+
+        ``NoHostResponse``/``HostConnectionLost`` já são tratados pelo ``_absorb``; ``SessionReplaced`` vira
+        ``replaced``; ``HostError`` (e subclasses de ``RecipeError``) = o host respondeu com uma tela de erro."""
+        if isinstance(exc, (NoHostResponse, HostConnectionLost, SessionReplaced, RecipeError)):
+            return
+        if exc.delivery not in ("partial", "unknown"):
+            if "input" in (type(exc).__dict__.get("templates") or {}) and INPUT_UNKNOWN not in exc.message:
+                exc.message = f"{exc.message.rstrip()} {INPUT_UNKNOWN}"
+                exc.args = (exc.message,)
+            exc.delivery = "unknown"
+            if exc.hint is None:
+                exc.hint = NO_RESPONSE_HINT
+        self._mark_uncertain()
 
     def press(self, key: Key | str, *, timeout: float | None = None) -> Session:
         """Pressiona uma tecla. AID (ENTER, CLEAR, PFn, PAn, PAGE_UP/DOWN...) espera a tela estável antes e a resposta
@@ -885,6 +996,13 @@ class Session:
         Devolve a tela com ``match`` = posição achada. ``gone=True`` espera o texto SUMIR. Timeout -> ``WaitTimeout``
         com a tela (``e.screen``) e o que havia na posição. Sucesso tira a sessão de ``uncertain``.
         """
+        return self._wait_text(text, row, col, timeout=timeout, gone=gone, case=case)
+
+    def _wait_text(self, text: str | re.Pattern[str], row: int | None = None, col: int | None = None, *,
+                   timeout: float | None = None, gone: bool = False, case: bool = True,
+                   cond_first: bool = False) -> Screen:
+        """``wait_text``; ``cond_first=True`` (só a compat ``screen_load``, como a v0.1.5) testa a condição ANTES dos
+        ``error_checks`` em cada snapshot."""
         with self._op():
             limit = self._timeout(timeout)
             gone, case = _bool("gone", gone), _bool("case", case)
@@ -919,7 +1037,7 @@ class Session:
                 return message + _oia_tail(s)
 
             hint = None if gone else WaitTimeout.hints["at" if at else "anywhere"]
-            screen = self._wait(cond, limit, describe, hint=hint)
+            screen = self._wait(cond, limit, describe, hint=hint, cond_first=cond_first)
             self._content_confirmed()
             return screen
 
@@ -1022,6 +1140,15 @@ class Session:
         root = user32.root_of(self._hwnd) or (self._hwnd if user32.is_window(self._hwnd) else 0)
         if not root:
             raise TerminalNotOpen.make(L=self.terminal, terminal=self.terminal)
+        from ._launcher import root_kind         # tardio: P-C (Onda 2)
+        kind = root_kind(user32, root)
+        if kind is None:
+            raise TerminalNotOpen.make(L=self.terminal, terminal=self.terminal)
+        if kind != "rumba":
+            # aba do Edge no modo IE (E.3): a janela-raiz é a do navegador inteiro do usuário; nunca mexer nela
+            dono = "do Microsoft Edge (aba no modo IE)" if kind == "edge" else "de outro programa"
+            raise ParameterError.make(detalhe=f"A janela do terminal {self.terminal} é {dono}, não do RUMBA; "
+                                              "show/minimize/window não estão disponíveis.")
         return root
 
     def show(self) -> Session:
