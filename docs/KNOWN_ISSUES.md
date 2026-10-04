@@ -1,74 +1,144 @@
-# Problemas conhecidos (auditoria de 2026-10-03, commit `5c03d47`)
+# Problemas conhecidos (v2.0.0, branch `dev`, 2026-10-04)
 
-Severidade: **C** = crítico (quebra requisito/corrompe/trava), **A** = alto (falha em produção
-plausível), **M** = médio (robustez/segurança), **B** = baixo (qualidade).
-Referências `arquivo:linha` valem para o commit auditado.
+Três partes: **(A)** o status de cada problema da auditoria da 0.1.5 (commit `5c03d47`; as referências `arquivo:linha`
+antigas valem para aquele commit), **(B)** problemas e limites atuais da v2 (inclusive os achados ao vivo de
+2026-10-03/04) e **(C)** pendências que dependem do dono do projeto antes do merge no `master`.
 
-## 1. Requisito "sempre a última versão"
+Severidade: **C** = crítico, **A** = alto, **M** = médio, **B** = baixo. Status: ✅ resolvido · 🟡 mitigado (resta
+algo) · ⏳ aberto · ➖ não se aplica mais.
 
-| # | Sev | Onde | Problema | Correção sugerida |
+## A. Auditoria da 0.1.5 — status na v2
+
+### A.1 Requisito "sempre a última versão"
+
+| # | Sev | Problema (0.1.5) | Status na v2 | Onde |
 |---|---|---|---|---|
-| 1.1 | **C** | `client.py:280-283` | Se já existe um servidor escutando na porta, o cliente o reutiliza **sem checar versão**. Após um auto-update o servidor 32-bit antigo continua vivo (não tem *idle timeout*) e executa **código antigo** indefinidamente. | *Handshake* de versão (commit/`__version__`) no `ping`; se divergir, pedir `shutdown` e subir um novo. |
-| 1.2 | **A** | `client.py:195-249` | O update do pacote 64-bit é feito **no interpretador que está rodando**: o processo atual continua com os módulos antigos em memória; a versão nova só vale na próxima execução. | Checar/atualizar antes de importar o resto do pacote e reexecutar (`os.execv`) ou exigir reinício explícito (ver plano, Fase 5). |
-| 1.3 | M | `client.py:263-265` | `update_python_64bit()` roda a **cada** `RumbaClient()` (sem guarda), e `git ls-remote` é chamado duas vezes por instanciação → lentidão; exige `git` no PATH; falha de rede derruba a criação do cliente com `CalledProcessError` sem mensagem amigável. | Uma checagem por processo, uma única consulta remota, mensagens claras, política de falha explícita. |
-| 1.4 | M | `client.py:255`, `263` | O parâmetro público `auto_update=False` permite a **qualquer usuário** desligar a obrigatoriedade. | Restringir o desligamento a modo de desenvolvimento explícito (ex.: variável `RUMBAPY_DEV=1`, registrado em log) ou remover o parâmetro (mantendo-o aceito e ignorado, por compatibilidade). |
+| 1.1 | **C** | Servidor 32-bit antigo reutilizado sem checar versão (rodava código velho após o update) | ✅ cliente e worker conferem o `build_id` no handshake; worker velho sem dono é parado e trocado; o worker confere o próprio build no boot (saída 14) e ao fim de cada lease | `_bridge.handshake`, `_worker/main.py`, `_worker/server.py` |
+| 1.2 | **A** | Update no interpretador em execução, que seguia com os módulos antigos | ✅ checagem antes de importar o resto do pacote; depois de instalar, sempre `UpdateRequired` ("rode de novo"); `BUILD_ID` recalculado no fim do import | `__init__.py`, `_update.ensure_latest` |
+| 1.3 | M | `git ls-remote` 2× por `RumbaClient()`, exige Git, erro cru sem rede | ✅ uma checagem por processo (+ TTL 1 h/12 h no `open`), cache de 60 s, HTTPS sem Git (Git e API do GitHub como reserva), `UpdateCheckFailed` em português | `_bootstrap.remote_master_sha`, `_update` |
+| 1.4 | M | `auto_update=False` desligava a obrigatoriedade | ✅ ignorado (WARNING) salvo com `RUMBAPY_DEV=1`, que é logado e avisado a cada import | `compat.RumbaClient.__init__`, `_update.install_mode` |
 
-## 2. Corrupção de dados / encoding
+### A.2 Corrupção de dados / encoding
 
-| # | Sev | Onde | Problema | Correção sugerida |
+| # | Sev | Problema (0.1.5) | Status na v2 | Onde |
 |---|---|---|---|---|
-| 2.1 | **C** | `api.py:286`, `api.py:311` | `.decode("utf-8")` em texto vindo do emulador, que é **cp1252** (confirmado ao vivo: o byte `0xE7` é exibido como `ç`). Qualquer acento na faixa lida (`Função`, `Usuário`, `ç`) gera `UnicodeDecodeError` e a ação falha. | Decodificar com `cp1252` e `errors="replace"`. |
-| 2.2 | **A** | `api.py:293` | `.encode("ascii")` ao escrever: qualquer acento/ç em dados de negócio (nomes, descrições) quebra `copy_string_to_ps`. | `encode("cp1252", errors="replace")`. |
-| 2.3 | **A** | `api.py:283-286`, `308-311` | `create_string_buffer(n).value` corta no **primeiro byte NUL**. Campos não preenchidos da tela 3270 contêm `0x00` (o perfil usa `ConvertNulls=false`), então leituras voltam **mais curtas que o pedido** e comparações como as de `screen_load` podem falhar. | Usar `buffer.raw[:n]` e trocar `\0` por espaço. |
-| 2.4 | **C** (latente) | `api.py:296-301` | `wd_query_session_status` passa um `bytes` imutável de 1 byte como buffer de saída de **20 bytes** → a DLL escreve fora do objeto (corrupção de heap). Nunca é chamada hoje. | Buffer mutável de 20 bytes com `buf[0]=short name`; parsear o layout 32-bit (ver `docs/RUMBA_EHLLAPI.md`). |
-| 2.5 | B | `api.py:303`, `353` | `copy_field` limita a 80 bytes (campos maiores são truncados, rc=6 ignorado); anotação `-> int` mas retorna `str`. | Descobrir o tamanho com `WD_FindFieldLength`. |
+| 2.1 | **C** | `.decode("utf-8")` em texto cp1252 | ✅ cp1252 (validado ao vivo, inclusive `ç ã É €`) | `_codec.py` |
+| 2.2 | **A** | `.encode("ascii")` na escrita | ✅ cp1252 estrito com `EncodingError` claro (`errors="replace"` opcional); NFC | `_codec.encode`, `Session.write/fill` |
+| 2.3 | **A** | `buffer.value` cortava no 1º NUL | ✅ `.raw[:n]`, NUL → espaço; leituras com o tamanho pedido (a compat mantém o corte da 0.1.5 em `copy_ps_to_string`) | `_codec`, `_worker/engine.read` |
+| 2.4 | **C** (latente) | `WD_QuerySessionStatus` com buffer imutável de 1 byte | ✅ buffer de 20 B com a letra no byte 0; layout 32-bit validado ao vivo | `_worker/hllapi.py`, `_worker/structs.py` |
+| 2.5 | B | `copy_field` limitado a 80 bytes | ✅ tamanho real por `WD_FindFieldLength` | `Session.read_field`, `compat.copy_field` |
 
-## 3. Travamentos e concorrência
+### A.3 Travamentos e concorrência
 
-| # | Sev | Onde | Problema | Correção sugerida |
+| # | Sev | Problema (0.1.5) | Status na v2 | Onde |
 |---|---|---|---|---|
-| 3.1 | **C** | `api.py:132-156` | Por dentro, a `ehlapi32.Dll` espera a resposta do emulador com `WaitForSingleObject(evento, INFINITE)`. O `@timeout` só **abandona** a thread: ela continua bloqueada, segurando o mutex `PID<pid>` do processo. Depois disso, toda chamada espera 1 s pelo mutex e roda **sem proteção** (a DLL ignora o timeout do mutex). | *Watchdog* que **recicla o processo worker** (saída limpa via `os._exit`, para o `DllMain` rodar o cleanup), em vez de abandonar threads. |
-| 3.2 | **A** | `server.py:331-337` | Uma thread por conexão TCP → chamadas concorrentes à DLL vindas de clientes diferentes do mesmo servidor. A identidade HLLAPI é **por processo** (todas as `RumbaAPI` do servidor compartilham **a mesma** conexão), então `disconnect` de um cliente derruba os outros, e o `session_id` não isola nada. | Um worker por sessão, com **uma única thread** que serializa todas as chamadas à DLL. |
-| 3.3 | M | `api.py:321-358` | O `@timeout` cria **uma thread por chamada**. Hoje funciona porque o ID HLLAPI é por processo. Se algum dia `MultiThreadConnectionOn()` for usado, cada thread nova consome 1 dos 32 slots → *popup modal* "Exceeded maximum number of clients, reboot for correction". | Thread dedicada e de vida longa. |
-| 3.4 | M | `server.py:37-52` | `screen_load` faz *polling* de 1 s (latência média de 0,5 s por espera, 2 min fixos de timeout, sem parâmetro). | *Polling* de 50–100 ms + `WD_Wait`/OIA, timeout configurável. |
-| 3.5 | M | `server.py:20`, `169-172` | `sessions` nunca é limpo (vazamento a cada `RumbaClient`); acesso sem lock entre threads. | Ciclo de vida explícito por sessão. |
+| 3.1 | **C** | `@timeout` abandonava threads presas na DLL | ✅ watchdog encerra o worker com `os._exit(3)` (nunca `TerminateProcess`); leituras repetidas 1× num worker novo | `_worker/watchdog.py`, `_bridge` |
+| 3.2 | **A** | Thread por conexão TCP; `disconnect` de um cliente derrubava os outros | ✅ um worker por letra, uma única thread de DLL, um dono (lease) por vez | `_worker/server.py` |
+| 3.3 | M | Thread por chamada (risco com `MultiThreadConnectionOn`) | ✅ T-dll de vida longa; `MultiThreadConnectionOn` nunca é usado | `_worker/server.py` |
+| 3.4 | M | `screen_load` com polling de 1 s e 2 min fixos | ✅ polling 50 ms/100 ms, prazos configuráveis | `waits.py` |
+| 3.5 | M | Dicionário `sessions` nunca limpo, sem lock | ➖ não existe mais; ciclo de vida explícito (lease + `release`/`disconnect`/`close`) | `session.py`, `_bridge.py` |
 
-## 4. Ciclo de vida do terminal
+### A.4 Ciclo de vida do terminal
 
-| # | Sev | Onde | Problema | Correção sugerida |
+| # | Sev | Problema (0.1.5) | Status na v2 | Onde |
 |---|---|---|---|---|
-| 4.1 | **A** | `api.py:243-256` | **Requisito do dono:** fechar **todas** as instâncias do perfil é obrigatório — duas instâncias da mesma letra fazem a 2ª exibir o diálogo modal "RUMBA API Service Control — Short Name already in use" e o HLLAPI fica preso à 1ª (validado ao vivo em 2026-10-03). O problema é o **critério**: o regex de título casa qualquer janela do desktop (ex.: uma planilha `BRAZIL_D.xlsx`). | Fechar todas as janelas que sejam **sessões RUMBA** do perfil (título `"<PERFIL> - Pro Client"` em processo do Web Launcher/IE), com `WM_CLOSE`, e tratar o diálogo "Short Name already in use". |
-| 4.2 | **A** | `server.py:67`, `125` | `logon_*` sempre fecha o terminal existente antes de abrir outro → derruba sessões em uso por outros scripts/clientes. | Reutilizar a sessão se já estiver conectável; fechar só por pedido explícito. |
-| 4.3 | **A** | `api.py:174-230` | Depende de `InternetExplorerMedium` (IE11 aposentado; só a automação COM ainda funciona). Se o link não for encontrado (`api.py:191-194`, sem `else`), o erro aparece 60 s depois como "Timeout aguardando a janela" — mensagem enganosa. | Abrir via `hawlauncher://` (Host Access Web Launcher, já instalado) ou hospedar o ActiveX no próprio processo; erro imediato se o link/perfil não existir. |
-| 4.4 | M | `api.py:127` | `base_url` usa `http://`; o servidor responde em `https://` (o `RumbaWebToHost.vbs` e os logs do NMServiceManager usam https). | Usar `https://`. |
-| 4.5 | M | `server.py:132` | `logon_rhelp` não verifica o rc do `WD_ConnectPS` nem tenta de novo (o CICS tenta 60×). | Mesmo laço de conexão com diagnóstico do rc. |
-| 4.6 | M | `api.py:331-332`, `313-319` | rc de `WD_SendKey` e `WD_Wait` ignorados → teclas não enviadas (rc 4/5: host ocupado/inibido) passam em silêncio. | Mapear rc → exceções tipadas; tratar rc=5 com `RESET` opcional. |
-| 4.7 | B | `server.py:22-27`, `54` | A verificação de "E R R O   G R A V E" (5,31) é específica do CICS, mas roda em todo `screen_load` (inclusive RHELP). | *Hooks* de erro por aplicação. |
-| 4.8 | B | `server.py:342-351` | Ao encerrar, o servidor faz `WD_DisconnectPS` mas nunca `WD_ResetSystem` (o manual WD_API manda chamá-lo antes de sair). | Incluir `WD_ResetSystem` no *shutdown*. |
+| 4.1 | **A** | Fechamento por regex de título podia fechar qualquer janela | ✅ só janelas que são sessões RUMBA do perfil (imagem + classe + título, ou HWND do HLLAPI); `WM_CLOSE` só na janela principal; diálogo "Short Name" tratado | `_instances.classify`, `_launcher.close_all` |
+| 4.2 | **A** | `logon_*` sempre fechava o terminal existente | ✅ `attach` e `open(reuse=True)` não fecham; `open()` fecha todas (requisito do dono); a compat `logon_*` mantém a semântica da 0.1.5 (abre de novo) de propósito | `session.py`, `compat.py` |
+| 4.3 | **A** | Dependência do `InternetExplorerMedium`; erro enganoso 60 s depois | ✅ Host Access Web Launcher; IE só de reserva (`_ie_open.js`), com `LaunchFailed` imediato e o passo que falhou | `_launcher._launch` |
+| 4.4 | M | Portal em `http://` | ✅ `https://` (`profiles.PORTAL_DEFAULT`) | `profiles.py` |
+| 4.5 | M | `logon_rhelp` sem checar o rc do `ConnectPS` | ✅ laço de `connect` com diagnóstico para todo perfil | `_launcher` (E.5 passo 6) |
+| 4.6 | M | rc de `SendKey`/`Wait` ignorados | ✅ todo rc vira exceção tipada com `delivery` | `_worker/rc.py`, `_worker/engine.py` |
+| 4.7 | B | "Erro grave" testado também no IMS | ✅ `error_checks` por perfil (só CICS) | `session.py`, `waits.cics_error_check` |
+| 4.8 | B | Sem `WD_ResetSystem` ao encerrar | ✅ parada limpa faz `DisconnectPS` + `ResetSystem` | `_worker/server.py` |
 
-## 5. Segurança
+### A.5 Segurança
 
-| # | Sev | Onde | Problema | Correção sugerida |
+| # | Sev | Problema (0.1.5) | Status na v2 | Onde |
 |---|---|---|---|---|
-| 5.1 | **A** | `server.py:318-327`, `client.py:327-337` | Socket TCP **sem autenticação** em portas fixas. Qualquer processo local, inclusive **de outro usuário** na mesma máquina (VDI/RDP/Citrix), pode ler telas e digitar na sessão CICS logada do usuário. Também pode haver colisão de portas entre usuários. | *Named pipe* por usuário com ACL + `authkey` (`multiprocessing.connection`). |
-| 5.2 | M | `server.py:294` | Em erro, o servidor loga a requisição bruta, que pode conter **a senha** (`logon_*`). | Nunca logar `params` de logon; mascarar. |
-| 5.3 | B | `client.py:350-358` | Senha trafega em JSON claro (localhost). Aceitável com 5.1 resolvido. | — |
+| 5.1 | **A** | Socket TCP sem autenticação, acessível a outros usuários | ✅ named pipe com DACL do usuário, `PIPE_REJECT_REMOTE_CLIENTS`, HMAC mútuo, conferência do PID do servidor | `_ipc.py` |
+| 5.2 | M | Requisição bruta (com senha) no log de erro | ✅ texto lido/escrito nunca vai a log; conteúdo de campo oculto nunca sai do worker | `_worker/mask.py`, `_worker/dispatch.py`, `_log.py` |
+| 5.3 | B | Senha em JSON claro no localhost | ➖ só pelo pipe autenticado do próprio usuário | `_ipc.py` |
 
-## 6. Operação / observabilidade
+### A.6 Operação / observabilidade
 
-| # | Sev | Onde | Problema | Correção sugerida |
+| # | Sev | Problema (0.1.5) | Status na v2 | Onde |
 |---|---|---|---|---|
-| 6.1 | **A** | `client.py:294-299`, `server.py:17` | stdout/stderr do servidor vão para `DEVNULL` e nenhum *handler* de logging é configurado → **zero diagnóstico** quando algo dá errado no lado 32-bit. | Log rotativo em `%LOCALAPPDATA%\rumbapy\logs\`. |
-| 6.2 | M | `server.py:306-354` | O servidor nunca termina (sem *idle timeout*; `KeyboardInterrupt` não chega a ele). Fica vivo até logoff/reboot com o terminal aberto. | *Idle timeout* + comando `shutdown`. |
-| 6.3 | M | `server.py:311` vs `client.py:271` | O cliente aceita qualquer `terminal_type` (porta 8800), mas o servidor só aceita `D/A/Z` → o servidor morre no `argparse` e o cliente espera 30 s até um "Timeout aguardando o servidor". | Validar no cliente com mensagem clara. |
-| 6.4 | B | `client.py:307` | `except:` nu engole qualquer erro (até `KeyboardInterrupt`) durante a espera. | `except OSError`. |
-| 6.5 | B | `client.py:327-337` | Um socket por comando → `TIME_WAIT` acumulado; em laços intensos pode esgotar portas efêmeras (`WinError 10048`, que já apareceu: houve *retry* no commit `c57df6d`). | Conexão persistente. |
+| 6.1 | **A** | Zero diagnóstico do lado 32-bit | ✅ logs rotativos do cliente, de cada worker, do boot, do update e do pip; `python -m rumbapy doctor` | `_log.py`, `_doctor.py` |
+| 6.2 | M | Servidor nunca terminava | ✅ idle de 30 min sem dono, evento de parada, `shutdown` | `_worker/watchdog.py` |
+| 6.3 | M | Letra inválida só falhava 30 s depois | ✅ `UnknownTerminal` na hora | `profiles.resolve` |
+| 6.4 | B | `except:` nu | ✅ código reescrito sem `except` nu | — |
+| 6.5 | B | Um socket por comando (`TIME_WAIT`, `WinError 10048`) | ✅ conexão persistente por `WorkerHandle` | `_bridge.py` |
 
-## 7. Empacotamento / repositório
+### A.7 Empacotamento / repositório
 
-| # | Sev | Onde | Problema | Correção sugerida |
+| # | Sev | Problema (0.1.5) | Status na v2 | Onde |
 |---|---|---|---|---|
-| 7.1 | B | `src/rumbapy.egg-info/` | Metadado de build (versão 0.1.0, desatualizado) versionado no Git. | Adicionar ao `.gitignore` e remover. |
-| 7.2 | B | `pyproject.toml:5` vs `client.py:65` | `requires-python >=3.12`, mas o Python 32-bit precisa ser ≥3.13 (`find_python_32bit`). | Documentar/alinhar. |
-| 7.3 | B | `README.md` | Exemplo passa o caminho do Python 32-bit (hoje opcional); não documenta `screen_load`, códigos de erro, nem acentos. | Reescrever com a nova API. |
-| 7.4 | B | — | Nenhum teste automatizado; nenhum *lint*/type-check. | Ver plano, Fase 0. |
+| 7.1 | B | `src/rumbapy.egg-info/` versionado | ✅ removido do Git | — |
+| 7.2 | B | `requires-python >=3.12` × 32-bit ≥ 3.13 | ✅ ≥ 3.12 nos dois lados | `pyproject.toml`, `_runtime32.py` |
+| 7.3 | B | README desatualizado | ✅ reescrito para a v2 | `README.md` |
+| 7.4 | B | Sem testes, lint ou type-check | ✅ pytest (unit/e2e/update), ruff, pyright, CI 3.12–3.14 × x64/x86, install-smoke | `tests/`, `.github/workflows/ci.yml` |
+
+## B. Problemas e limites atuais da v2
+
+### B.1 Achados ao vivo (2026-10-03/04, roteiros L1–L9 e compat)
+
+| # | Sev | Achado | Status | Onde |
+|---|---|---|---|---|
+| N1 | **A** | **Fechar um terminal derruba a conexão HLLAPI dos outros** (a janela do outro fica intacta; a próxima chamada do worker dele dá rc 1). Abrir não derruba (L9) | 🟡 o worker reconecta à mesma instância (`reconnect_same`) e repete a op 1× (só leitura ou entrada recusada na 1ª chamada); entrada parcial levanta com `delivery` | `_worker/engine.py`, `_worker/dispatch.py` (A.14 n) |
+| N2 | **A** | **`WD_QuerySessions` trava** quando chamado enquanto um emulador encerra — e, intermitente, mesmo depois de o processo dele sair (L1/L3) | 🟡 o `close_all` espera a saída dos processos sem chamar a DLL e dispensa a consulta quando a instância conhecida foi fechada; limite de 8 s no watchdog. Resta: se a consulta for necessária e travar, custa 8 s + um worker novo | `_launcher.close_all` (passos 5b/6), `_worker/watchdog.LIMITS` (A.14 l/m) |
+| N3 | M | O processo do launcher tem uma `Internet Explorer_Hidden` **visível** e sem título; o `close` mandava `WM_CLOSE` nela também | ✅ janelas auxiliares ignoradas (`HELPER_CLASSES`) | `_instances.py` |
+| N4 | M | Com o modal "Short Name already in use" aberto, `WM_CLOSE` derrubou o launcher (0xC0000005); a 2ª instância da mesma letra às vezes cai ao fechar mesmo com o OK antes (L2) | 🟡 o `close` clica OK antes do `WM_CLOSE`; a queda restante é defeito do RUMBA, sem efeito nas outras instâncias | `_launcher.close_all` (passo 3b) |
+| N5 | B | Um processo de launcher **por perfil** (D e Z em processos diferentes) | ✅ fato incorporado (instância nova por diferença de conjunto + HWND) | `_launcher`, `_instances` |
+| N6 | B | Tempo de registro da letra varia (~9 a ~25 s) e o de conexão (~11 a ~27 s) | ✅ prazo do `open` 90 s (`RUMBAPY_OPEN_TIMEOUT`) e fases no `LaunchTimeout` | `_launcher` |
+| N7 | — | Validado sem problema: cp1252 ida e volta (L4), lease/evict/reciclagem entre processos (L3), `show`/`minimize` com leituras (L5), logon CICS com senha em campo oculto em 1,2 s e fechamento logado sem diálogo (L6), neutralização de um servidor 0.1.5 real (L8), script 0.1.5 sem alteração (`RumbaClient("D").logon_cics` → `copy_ps_to_string` → `screen_load` → `close_terminal`) | ✅ | `docs/RUMBA_EHLLAPI.md` §11.1 |
+
+### B.2 Limites assumidos da proteção de conteúdo oculto (A.9 h)
+
+* `secret=True` protege a **leitura** só até a resposta da próxima AID: num campo **visível**, o span secreto cai quando
+  o host responde, e a tela passa a mostrar o que o host mandou. Senha vai em campo oculto (README; as receitas
+  conferem `Field.hidden` antes de escrever).
+* A detecção de escrita espontânea do host (sem AID nossa) num campo oculto só existe no `snapshot` (hash do PS);
+  `read`/`read_field` não reenumeram por escrita sem AID.
+* Sem como conferir a máscara, a leitura é recusada (`HllapiError` "…para não expor conteúdo oculto") e o `Screen`
+  vem com `hidden_unknown=True` (o cliente não anexa essa tela a exceções).
+
+### B.3 Riscos e lacunas remanescentes
+
+| # | Sev | Item | Status |
+|---|---|---|---|
+| R1 | **A** | Sem rede/GitHub não há uso (fail-closed; sem válvula offline) | ⏳ decisão Q1/D1 |
+| R2 | M | `UpdateRequired` uma vez por deploy (tarefas agendadas falham uma execução) | ⏳ decisão Q2 (reexecução adiada para a v2.1) |
+| R3 | M | `open`/`close` de um script interrompem o lote de outro na mesma letra (`SessionReplaced`) | ✅ comportamento pedido pelo dono (Q5) |
+| R4 | M | `NORESET` muda o comportamento da 0.1.5 (AUTORESET): teclado bloqueado agora levanta `KeyboardLocked` | ✅ decisão Q4; dica de `Key.RESET` |
+| R5 | M | Bits do OIA não validados (G1 SSCP-LU, bits de G8, insert, erro de comunicação): só "G8 ≠ 0 = bloqueado" decide | ⏳ exige provocar estados no host (proibido sem plano) |
+| R6 | M | rc 11 depois de um `os._exit` do watchdog (conexão do worker anterior presa): tolerado por 15 s na reconexão | ✅ validado ao vivo em 2026-10-04 (sonda avulsa anterior do L3b): depois de `os._exit(3)` sem `DisconnectPS`, o `ConnectPS` seguinte deu rc 0 em ~14 ms, sem rc 11. Falta rodar a variante nova `tests/live` (`--script l3b`, com `GuardedDll` e confirmação no console) |
+| R7 | M | Breakaway do Job negado (IDE) ⇒ worker morto à força ao fechar a IDE ⇒ 1 slot HLLAPI vaza | 🟡 WARNING no log; `ClientTableFull` com instrução (logoff) |
+| R8 | M | Abas do Edge no modo IE seguram a letra | 🟡 `InstanceNotClosable` com a dica de fechá-las |
+| R9 | B | Janela TOCTOU estreita entre a conferência de `Session.close()` (`status`) e o `close_all` | 🟡 aceito (A.14 e) |
+| R10 | B | `.SHARDAT` global em máquina multiusuário (colisão de `LOWORD(pid)`) | 🟡 colisão detectada no boot (saída 15) e novo spawn; neutralização só na própria sessão do Windows |
+| R11 | B | Conjunto seguro de caracteres por host (`€` no IMS, `¤` no CICS) validado só no D | ⏳ L4 só em D |
+| R12 | B | Logon IMS (`Ims.logon`/`logon_rhelp`) com as âncoras da 0.1.5, não validado ao vivo | ⏳ L7 exige autorização explícita |
+| R13 | B | Mensagens provisórias fora dos templates de `errors.py`: `LaunchFailed` do fallback IE ("O Internet Explorer não abriu o {perfil} ({step}: {error})."), `WorkerStartFailed` sem código de saída ("…não iniciou: {motivo}") | ⏳ variantes `ie`, `too_many`/`popen_failed`/`not_ready` (A.10 f, A.12 f) |
+| R14 | B | `HostBusy` numa **leitura** usa o texto "parte das teclas pode ter sido digitada", enganoso | ⏳ variante `read` (A.11 h) |
+| R15 | B | `UpdateRequired` "Outro processo atualizou o RumbaPy. Rode de novo." não usa a ação do contexto (Jupyter/REPL) | ⏳ variante `other_process_action` (A.14 b) |
+| R16 | B | Repositório público com a engenharia reversa da DLL | ⏳ decisão Q8/D7 (jurídico/Segurança) |
+| R17 | B | O exemplo de Jupyter da especificação (B.10) usa `t.screen.input_fields`, mas `t.screen` não traz campos (`ParameterError`); o README usa `t.snapshot(fields=True).input_fields` | ⏳ corrigir o texto da B.10 |
+
+## C. Pendências do dono antes do merge no `master`
+
+1. **Decisões K.2** (padrão adotado entre colchetes): Q1 válvula offline [não existe]; Q2 reexecução após update
+   [não]; Q3 mudanças de semântica da compat [aceitar]; Q4 `NORESET` [sim]; Q5 `open`/`close` revogam o lease de outro
+   script [sim]; Q6 proteção do `master` + CI obrigatório [recomendado]; Q7 download do Python 32-bit [v2.1];
+   Q8 publicação da engenharia reversa [pendente]; Q9 testes ao vivo além do permitido [só com plano]; Q10 canal `dev`
+   [não]; Q11 `with` fecha o terminal [não; `close_on_exit=True`].
+2. Variantes de mensagem em `errors.py`: `HostBusy` `read` (R14), `UpdateRequired` `other_process_action` (R15),
+   `LaunchFailed` `ie` e `WorkerStartFailed` `too_many`/`popen_failed`/`not_ready` (R13).
+3. **Teste manual do `heal`** (H.6) registrado no PR antes do merge (obrigatório também a cada mudança do
+   `_bootstrap.py`, cujo hash está em `_build/bootstrap.sha256`).
+4. Job **`install-smoke` verde no GitHub Actions** (localmente roda com `RUMBAPY_SMOKE=1`), e o restante da matriz do CI.
+5. Roteiros ao vivo: **L7 (RHELP) não validado** (exige autorização explícita); **L3b validado ao vivo em 2026-10-04**
+   pela sonda avulsa anterior (`ConnectPS` rc 0 em ~14 ms depois de `os._exit(3)` sem `DisconnectPS`, sem rc 11); a
+   variante nova de `tests/live` (`--script l3b`, guard readonly e watchdog no processo de teste) e os demais roteiros
+   pelo executor novo (relatório com registro do guard e varredura de senha) ainda não foram executados.
+6. Portão do `master` (J.1): CI verde em `dev`, roteiro L1–L6 executado pelo dono em `dev`, versão incrementada,
+   `CHANGELOG.md`. Depois do merge: avisar os usuários para reiniciar kernels/scripts antigos (H.8).

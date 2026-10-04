@@ -21,6 +21,11 @@ defaults:
   run:
     shell: pwsh
 
+# Defesa extra: os roteiros ao vivo (tests/live, J.6) nunca rodam no CI. Além do -m "not live", RUMBAPY_LIVE=0 mantém
+# o sandbox e as sentinelas do tests/conftest.py ligados mesmo que alguém defina a variável no repositório.
+env:
+  RUMBAPY_LIVE: "0"
+
 jobs:
   lint:
     name: ruff + pyright
@@ -32,13 +37,26 @@ jobs:
           python-version: "3.13"
           architecture: x64
       - name: Ferramentas (só de desenvolvimento; o pacote continua com dependencies = [])
-        run: python -m pip install --disable-pip-version-check ruff pyright
+        run: python -m pip install --disable-pip-version-check ruff pyright pytest pytest-timeout
       - name: ruff
         run: ruff check src tests _build --select E,F,W --ignore E501
       - name: sintaxe compatível com Python 3.12
         run: python -c "import ast, pathlib; [ast.parse(p.read_text(encoding='utf-8'), str(p), feature_version=(3, 12)) for d in ('src', 'tests', '_build') for p in pathlib.Path(d).rglob('*.py')]; print('ok')"
-      - name: pyright (pythonVersion 3.12, Windows)
+      - name: pyright (pythonVersion 3.12, Windows; bloqueante, A.13 c)
         run: pyright
+      # T-SEC-2 (J.5): os padrões internos vêm SÓ do segredo (nunca do repositório público). Sem o segredo (fork, PR
+      # de fora) o teste é pulado; com ele, um "skipped" é falha. O teste nunca imprime os padrões, só nomes de arquivo.
+      - name: T-SEC-2 (nenhum dado interno nos arquivos versionados)
+        env:
+          RUMBAPY_TSEC2_PATTERNS: ${{ secrets.RUMBAPY_TSEC2_PATTERNS }}
+        run: |
+          python -m pytest tests/security/test_tsec2_internal_data.py -m "not live" -q -ra --junitxml="${{ runner.temp }}/tsec2.xml"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($env:RUMBAPY_TSEC2_PATTERNS) {
+            python -c "import sys, xml.etree.ElementTree as ET; r = ET.parse(sys.argv[1]).getroot(); n = sum(1 for _ in r.iter('skipped')); sys.exit('T-SEC-2 foi pulado com o segredo definido' if n else 0)" "${{ runner.temp }}/tsec2.xml"
+          } else {
+            Write-Output "segredo RUMBAPY_TSEC2_PATTERNS ausente: T-SEC-2 pulado"
+          }
 
   test:
     name: pytest ${{ matrix.python }} ${{ matrix.arch }}
@@ -51,6 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: setup
         with:
           python-version: ${{ matrix.python }}
           architecture: ${{ matrix.arch }}
@@ -58,8 +77,23 @@ jobs:
         run: python -m pip install --disable-pip-version-check pytest pytest-timeout
       - name: Interpretador
         run: python -c "import struct, sys; print(sys.version, struct.calcsize('P') * 8, 'bits')"
-      - name: pytest (sem testes ao vivo; os e2e com worker real rodam nos jobs x86)
-        run: python -m pytest tests -m "not live" -q -ra
+      - name: pytest (sem testes ao vivo; nos jobs x86 os e2e com worker real vão no passo seguinte)
+        run: |
+          $ignore = @()
+          if ("${{ matrix.arch }}" -eq "x86") {
+            $ignore = @("--ignore=tests/e2e/bridge", "--ignore=tests/unit/worker/test_main_e2e.py")
+          }
+          python -m pytest tests -m "not live" -q -ra @ignore
+      # Jobs x86: o worker 32-bit real (BOOT/spawn/pipe/handshake com --fake-dll) sobe com o Python DO PRÓPRIO JOB
+      # (RUMBAPY_TEST_PY32). Pular por falta de Python 32-bit aqui é falha.
+      - name: e2e com o worker 32-bit real (x86; obrigatório)
+        if: matrix.arch == 'x86'
+        env:
+          RUMBAPY_TEST_PY32: ${{ steps.setup.outputs.python-path }}
+        run: |
+          python -m pytest tests/e2e/bridge tests/unit/worker/test_main_e2e.py -m "not live" -q -ra --junitxml="${{ runner.temp }}/e2e-x86.xml"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -c "import sys, xml.etree.ElementTree as ET; r = ET.parse(sys.argv[1]).getroot(); bad = [s.get('message', '') for s in r.iter('skipped') if '32-bit' in s.get('message', '')]; sys.exit('e2e x86 pulado sem o Python 32-bit: ' + '; '.join(bad) if bad else 0)" "${{ runner.temp }}/e2e-x86.xml"
 
   install-smoke:
     name: install-smoke ${{ matrix.python }}

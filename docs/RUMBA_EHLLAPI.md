@@ -300,8 +300,10 @@ Outros mnemônicos documentados [WDAPI]: `@q` End · `@A@T` Print PS · `@A@C` T
   AID (Enter, PFn, PAn, Clear…) é descartado** [WDAPI] — uma AID por chamada.
 * `CopyStringToPS`/`CopyStringToField` **não interpretam** mnemônicos (copiam `@E` literalmente) e não movem
   o cursor; só `SendKey` envia teclas de controle [WDAPI].
-* O teclado precisa estar livre; com `AUTORESET` (padrão) o emulador envia RESET antes das teclas.
-* O `KEYS` atual do `api.py` não tem PF13–24, PA1–3, SysReq, Attn, Erase Input, End, Field Exit.
+* O teclado precisa estar livre; com `AUTORESET` (padrão) o emulador envia RESET antes das teclas. A v2 liga
+  `NORESET` logo depois do `ConnectPS` (teclado bloqueado vira `KeyboardLocked`; RESET só por pedido explícito).
+* A v2 cobre todas as teclas desta tabela em `rumbapy.keys.Key` (PF1–24, PA1–3, SysReq, Attn, Erase Input, End,
+  Field Exit, Dup, Field Mark…); a 0.1.5 (`api.py`, removido) não tinha PF13–24, PA1–3, SysReq, Attn etc.
 
 ---
 
@@ -344,7 +346,8 @@ uso por função conforme o padrão **[IBM]**.
 | 301–311 | `APIINVALIDFUNCTIONNUM` (301), `APIFILENOTFOUND` (302), `APIACCESSDENIED` (305), `APIMEMORY` (308), `APIINVALIDENVIRONMENT` (310), `APIINVALIDFORMAT` (311) | WinHLLAPI | — |
 | 9998 / 9999 | `APIINVALIDPSID` / `APIINVALIDRC` | Sessão/rc inválidos | — |
 
-O `ERROR_CODES` atual do `api.py` cobre só um subconjunto disso.
+Na v2, cada rc de cada função vira uma exceção tipada em `src/rumbapy/_worker/rc.py` (teste percorre a tabela
+inteira); a 0.1.5 (`api.py`, removido) cobria só um subconjunto.
 
 ---
 
@@ -369,6 +372,11 @@ O `ERROR_CODES` atual do `api.py` cobre só um subconjunto disso.
     AutoRumba/Java) nunca devolve nada.
 14. `WD_Convert` devolve o resultado **no próprio retorno** (0 = inválido, 9998/9999 = erro), não em rc.
 15. Um 2º cliente no mesmo PS recebe rc 11 sob `WRITE_SUPER` (padrão) — no máximo um worker por letra.
+16. **Fechar um emulador derruba a conexão HLLAPI dos outros clientes** (de outras letras): a próxima chamada dá rc 1;
+    reconecte (`ConnectPS` da mesma letra) e confira o HWND antes de continuar (§11.1.1).
+17. **`WD_QuerySessions` pode travar** se chamado enquanto (ou logo depois que) um emulador encerra: espere a saída do
+    processo sem chamar a DLL e use prazo curto (§11.1.1).
+18. `WM_CLOSE` com o modal "Short Name already in use" aberto pode derrubar o launcher (`0xC0000005`): clique OK antes.
 
 ---
 
@@ -410,6 +418,40 @@ O `ERROR_CODES` atual do `api.py` cobre só um subconjunto disso.
 | Encoding | **cp1252** (screenshot do `ç`) |
 | 2ª instância da mesma letra | diálogo modal **"RUMBA API Service Control — Short Name already in use"**; o HLLAPI segue na 1ª |
 | `WM_CLOSE` na janela do launcher | fecha em ~0,5 s sem confirmação; a letra é desregistrada |
+
+### 11.1.1 Medições da v2 contra a DLL real (2026-10-03/04, worker 32-bit + guard, sem AID fora do L6)
+
+Roteiros da especificação (J.6) executados pelo agente principal com autorização do dono: L1, L2, L3, L4, L5, L6, L8,
+L9 e o roteiro "compat" (script da 0.1.5 sem alteração); L3b em 2026-10-04 com a sonda avulsa anterior (`ConnectPS`
+rc 0 em ~14 ms depois de `os._exit(3)` sem `DisconnectPS`, sem rc 11). **Não executado:** L7 (IMS/RHELP). Ferramentas
+(hoje todas invólucros de `tests/live/runner.py`): `tools/research/live_worker_probe.py`, `live_v2_probe.py`,
+`live_close_probe.py`, `live_legacy_probe.py`, `live_l3b_probe.py`.
+
+| Item | Resultado |
+|---|---|
+| Boot do worker até `listening` | ~1,2 s; 1º `WD_QuerySessions` 74 ms (carga da DLL) |
+| Registro da letra depois do `Popen` do launcher | **~9 a ~25 s** (varia entre execuções; um `QuerySessions` levou 0,8 s no instante do registro) |
+| `WD_ConnectPS` rc 0 depois do `Popen` | **~11 a ~27 s** (rc 1 por alguns segundos enquanto a TN3270 conecta); `open("D")` completo ~17,6 s numa execução típica |
+| `WD_SetSessionParamEx("NORESET")` | rc 0 (parâmetro local da conexão HLLAPI) |
+| 1ª tela | já presente no `connect` pelo launcher; pelo fallback IE, rc 4 (PS vazio) logo depois do `connect` |
+| `QuerySessions` / `QuerySessionStatus` | tipo `H`, nome longo vazio / tipo `D`, nome longo `D`, 24×80, `host_cp` 0, EAB desligado |
+| `WD_GetSessionHWND` | janela-raiz do launcher; `hwnd_pid` = PID do launcher |
+| `snapshot` com enumeração de campos | 1º: 38 ms no worker (26 campos, 1 de entrada em (22,56) atributo `0xC5`); seguintes 1,6–2,9 ms no worker |
+| `snapshot` ida e volta 64-bit → pipe → 32-bit (com máscara) | **~2–3 ms** (mediana 2,7–2,8 ms; mín 2,5; máx 3,8) |
+| Escrita local (L4) | `ç`, `€`, `X` lidos de volta iguais; `Truncated`/`ProtectedField` recusados sem cópia (`delivery="none"`) |
+| Logon CICS (L6, guard `login`) | menu → `C` → signon (senha em campo **oculto**) → `Signon` em 1,17 s; senha ausente de todo log/repr/relatório |
+| Fechamento (`WM_CLOSE` só na janela principal) | janela some em 0,11 s, processo sai em 0,33 s; `close` completo **~0,4–0,56 s** (também com sessão logada, sem diálogo) |
+| `WD_QuerySessions` depois que o processo do emulador saiu | 1 ms e a letra já não está registrada — mas **travou** (intermitente) em outras execuções, inclusive logo depois do fechamento: o watchdog encerrou o worker (por isso o `close` hoje não consulta a DLL quando não precisa e o limite dessa função é 8 s) |
+| 2ª instância da mesma letra (L2) | "RUMBA API Service Control — Short Name already in use" (às vezes 2 vezes); a 2ª instância sai com `0xC0000005` ao fechar, com ou sem o OK antes |
+| Dois perfis (L9) | `BRAZIL_D` e `BRAZIL_Z` em **processos de launcher diferentes** (um processo por perfil); abrir o D não afeta o Z; **fechar o D derruba a conexão HLLAPI do worker do Z** (rc 1 na próxima chamada, janela do Z intacta) |
+| Lease entre processos (L3) | 2º dono → `TerminalInUse` com PID/script; `close` com dono vivo em ~0,56 s (o outro vira `replaced`); reciclagem do worker → `read` seguinte em 0,76 s |
+| Servidor 0.1.5 real (L8) | `disconnect` pela neutralização em 61 ms; ele continua escutando, sem a conexão HLLAPI. Obs.: o `python.exe` de venv é redirecionador (PID ouvinte ≠ PID do `Popen`) |
+| Log do worker | nenhuma linha com texto de tela; só coordenadas, tamanhos, rc e (DEBUG) `sha=` |
+
+Inventário de janelas do processo do launcher (16 de nível superior numa sessão aberta): 2 visíveis — a principal
+WindowsForms `"<PERFIL> - Pro Client"` e uma `Internet Explorer_Hidden` **sem título mas com `WS_VISIBLE`** — e ocultas:
+"RUMBA API Manager" (Afx, serviço HLLAPI), "Telnet3270 Application", `WinSocketNotifyWindow`/`SocketNotifyWindow`,
+`.NET-BroadcastEventWindow*`, `GDI+ Hook Window Class`, `IME`/`MSCTFIME UI`. Só a principal recebe `WM_CLOSE`.
 
 ## 12. Fontes
 

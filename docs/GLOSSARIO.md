@@ -26,4 +26,23 @@
 | **IMS / RHELP** | Gerenciador transacional/banco hierárquico da IBM; RHELP é a aplicação usada no IMS A (C1). |
 | **USS / USS010** | Tela de logon do VTAM (*Unformatted System Services*) que aparece antes de escolher a aplicação (`IMSRS`). |
 | **Modo IE do Edge** | Edge hospedando o motor do IE (`iexplore.exe -dualengineadapter`) para sites legados com ActiveX. |
-| **`InternetExplorerMedium`** | Objeto COM `{D5E8041D-…}` que cria um IE em integridade média; é o que o `api.py` usa para abrir o portal. |
+| **`InternetExplorerMedium`** | Objeto COM `{D5E8041D-…}` que cria um IE em integridade média; era o caminho da 0.1.5 para abrir o portal; na v2 só o fallback IE (`_ie_open.js`) o usa. |
+
+## Termos da v2 do RumbaPy
+
+| Termo | Significado |
+|---|---|
+| **Worker** (processo auxiliar) | Processo Python 32-bit, um por letra e por sessão do Windows, o único que carrega a `ehlapi32.Dll`. Roda a partir dos arquivos do pacote 64-bit (`_worker/`), sem executar `rumbapy/__init__.py`. |
+| **BOOT** | Linha única (`_bridge.BOOT`) passada com `-I -S -c` ao Python 32-bit: cria um módulo `rumbapy` vazio apontando para a pasta do pacote e chama `_worker.main`. |
+| **Lease** (dono) | Direito exclusivo de uma conexão do pipe de operar o terminal da letra. Nasce no handshake `owner` e termina no fim da conexão (`release()`, fim do processo) ou num `evict`. Conexões `admin` não têm lease. |
+| **Evict** | Revogação do lease pelo `close`/`open` de qualquer processo: o worker desconecta a HLLAPI e a `Session` antiga passa a levantar `SessionReplaced`. |
+| **`build_id`** | Hash dos arquivos `.py/.js/.json` do pacote; cliente e worker precisam ter o mesmo para conversar como dono (garante a "última versão" também no lado 32-bit). |
+| **Heal** | Reparo automático no `import`: qualquer falha de arquivo/sintaxe do pacote reinstala o `master` atual (`_bootstrap.heal`). |
+| **`delivery`** | Atributo das exceções de entrada: `none` (nada chegou ao RUMBA), `partial` (parte pode ter chegado), `unknown` (não dá para saber). |
+| **`uncertain`** | Estado da `Session` depois de uma entrada com `delivery` `partial`/`unknown`: recusa nova entrada até uma espera de conteúdo dar certo ou `acknowledge()`. |
+| **Máscara** | Troca, dentro do worker, do conteúdo de campos não exibidos (senhas) e de spans `secret` por espaços antes de qualquer resposta. `hidden_unknown=True` quando não pôde ser calculada. |
+| **Watchdog** | Thread do worker que encerra o processo com `os._exit(3)` se uma chamada da DLL passar do limite (ou se a janela do emulador sumir durante a chamada). |
+| **`NORESET`** | Parâmetro de sessão HLLAPI ligado depois do `ConnectPS`: o emulador não manda RESET antes das teclas; teclado bloqueado vira `KeyboardLocked`. |
+| **Sandbox** | `RUMBAPY_SANDBOX=1`: o código de produção recusa DLL real, launcher, mensagens a janelas, pip e rede (testes). |
+| **Guard** (`GuardedDll`) | Intertravamento dos testes ao vivo (`readonly`, `text`, `login`): recusa, antes da DLL, as funções e teclas fora da política. |
+| **Neutralização** | `disconnect` mandado pela v2 a um servidor 0.1.5 ainda vivo, para soltar a conexão HLLAPI da letra (nunca o encerra). |

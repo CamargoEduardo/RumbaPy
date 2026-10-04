@@ -45,7 +45,7 @@ C:\Program Files (x86)\Micro Focus\RumbaWebToHost.vbs      atalho: abre index_pr
 | `{1309F3EA-5A97-437A-9D08-19CD05EEE7C0}` | VBA Scripting | `WDScript.ocx` |
 | `{8E4800C0-3CC7-438C-9711-B21EA0CC0E4A}` | `W2HDownloadInstall.Downloader.*` (serviço de download) | NMServiceManager |
 | `{71BC2ED7-60F8-40c7-816C-3BF05DB994A3}` | objeto de persistência do Pro Client | — |
-| `{D5E8041D-920F-45e9-B8FB-B1DEB82C6E5E}` | `InternetExplorerMedium` (usado pelo `api.py`) | `ielowutil.exe` → IE |
+| `{D5E8041D-920F-45e9-B8FB-B1DEB82C6E5E}` | `InternetExplorerMedium` (usado pelo fallback IE da v2, `_ie_open.js`; era o caminho da 0.1.5) | `ielowutil.exe` → IE |
 
 Protocolo de URL: `HKCR\hawlauncher\shell\open\command` = `"C:\Program Files (x86)\Micro Focus\Host Access Web Launcher\Host Access Web Launcher.exe" "%1"`.
 
@@ -125,9 +125,39 @@ iexplore.exe (x86)                                   ← processo de abas do IE 
                         └─ 4× AfxOleControl140 0×0   ← controles auxiliares (HLLAPI, macro, FTX, app) [a validar qual é qual]
 Janelas soltas do mesmo processo: DDEMLEvent / DDEMLMom (DDE), JClipView (clipboard)
 ```
-* Com `InternetExplorerMedium` (o caminho do `api.py`), a janela é um IE "frame" próprio (popup do `window.open`).
+* Com `InternetExplorerMedium` (o fallback IE da v2; o caminho padrão da 0.1.5), a janela é um IE "frame" próprio (popup do `window.open`).
 * A sessão usa um *socket* local em escuta no próprio processo (`127.0.0.1:<efêmera>`), coerente com o
   comentário do perfil "all connection go via secure redirector" (camada `Rnsocks.dll`/RSS) **[a validar]**.
+
+### 3.1 Sessão aberta pelo Host Access Web Launcher (caminho padrão da v2; validado ao vivo em 2026-10-03/04)
+
+* **Um processo `Host Access Web Launcher.exe` por perfil**: com `BRAZIL_D` e `BRAZIL_Z` abertos, são dois processos
+  (roteiro L9). Código de saída 0 do `Popen` não é falha (o RumbaPy não depende disso).
+* Inventário do processo (16 janelas de nível superior numa sessão aberta):
+
+  | Janela | Classe | Visível | Papel |
+  |---|---|---|---|
+  | `<PERFIL> - Pro Client` | `WindowsForms10.Window.*` | sim | janela principal (raiz do `WD_GetSessionHWND`) — a **única** que recebe `WM_CLOSE` |
+  | (sem título) | `Internet Explorer_Hidden` | **sim** (`WS_VISIBLE`) | auxiliar do motor IE; fechá-la junto atrapalhava o encerramento |
+  | `RUMBA API Manager` | `Afx:*` | não | serviço HLLAPI do emulador |
+  | `Telnet3270 Application` | — | não (vira o diálogo "Connecting To Address" enquanto conecta) | conexão TN3270 |
+  | — | `SocketNotifyWindow`/`WinSocketNotifyWindow`, `.NET-BroadcastEventWindow*`, `GDI+ Hook Window Class`, `IME`, `MSCTFIME UI` | não | auxiliares do Windows/.NET |
+
+  O RumbaPy ignora as auxiliares (`_instances.HELPER_CLASSES`).
+* Diálogos: `Telnet3270 Application` / "Connecting To Address: …" (`#32770`, botão Cancel) aparece por alguns
+  segundos enquanto a TN3270 conecta e some sozinho — não tocar; `RUMBA API Service Control` / "Short Name already in
+  use" (botão OK) quando a letra já está em uso por outra instância — o `close` clica OK **antes** do `WM_CLOSE` da
+  dona, porque `WM_CLOSE` com o modal aberto derrubou o launcher (`0xC0000005`); `HLLAPI ERROR` / "Exceeded maximum
+  number of clients" — nunca clicar (exige logoff).
+* Tempos: letra registrada no HLLAPI ~9 a ~25 s depois do `Popen`; `WD_ConnectPS` rc 0 ~11 a ~27 s; `WM_CLOSE` na
+  principal: janela some em ~0,1 s, processo sai em ~0,3 s, letra desregistrada; sessão CICS logada fecha sem
+  diálogo de confirmação.
+* **Fechar uma sessão derruba a conexão HLLAPI dos clientes de outras letras** (a janela delas continua aberta e
+  logada): a próxima chamada dá rc 1 e é preciso reconectar (`docs/RUMBA_EHLLAPI.md` §11.1.1). Abrir não derruba.
+* `WD_QuerySessions` chamado enquanto o emulador encerra (e, às vezes, logo depois de o processo sair) pode travar
+  dentro da DLL.
+* `ShowWindowAsync(SW_SHOWMINNOACTIVE)` minimiza sem ativar e o HLLAPI continua funcionando; `WD_ShowSession` não
+  minimiza esta janela.
 
 ---
 
@@ -201,8 +231,9 @@ contêiner: é a ponte entre clientes externos da `ehlapi32.Dll` e o display.
   `hawlauncher://` e sem o sufixo. Ex.:
   `"Host Access Web Launcher.exe" "hawlauncher://https://<portal>/rumba694/w2hlegacy/profpro/BRAZIL_D.html/microfocus_w2h_hawlauncher"`.
 * `window.external.IsHostAccessWebLauncher()` → `true`; com isso o perfil cria o contêiner **na própria janela**
-  (sem popup). Título da janela = título da página (`"BRAZIL_D - Pro Client"`). **Um processo por sessão** → o
-  RumbaPy pode lançar e encerrar o processo que é dele.
+  (sem popup). Título da janela = título da página (`"BRAZIL_D - Pro Client"`). **Um processo por perfil**
+  (validado no L9; §3.1) → o RumbaPy lança o processo e o encerra com `WM_CLOSE` na janela principal (nunca
+  `TerminateProcess`). A v2 usa este caminho por padrão (`_launcher.py`).
 * Tamanho/posição/**`WindowState`** são salvos por URL (sem query string) em
   `%LOCALAPPDATA%\Micro Focus\Host Access Web Launcher\Host Access Web Launcher.config` (XML, mutex
   `HostAccessWebLauncher_Mutex_SaveSessionSettings`) — dá para pré-configurar a janela minimizada.
@@ -216,6 +247,9 @@ contêiner: é a ponte entre clientes externos da `ehlapi32.Dll` e o display.
 * `NMServiceManager\Logs\NMInstall.log` mostra cada abertura de perfil (verificação de componentes).
   O servidor devolve 404 para `/rumba694/w2hlegacy/w2hlegacy/config/*.xml` e o cliente usa as cópias locais — normal.
 * Propriedade `HLLAPIDebugFile` (vazia nos perfis) indica suporte a log de depuração do HLLAPI no emulador **[a validar]**.
+* Do lado do RumbaPy: `python -m rumbapy doctor` (RUMBA/launcher, Python 32-bit, update, workers vivos, servidores
+  0.1.5 nas portas) e os logs em `%LOCALAPPDATA%\rumbapy\logs\` (`client-*.log`, `worker-<tag>-<L>.log`,
+  `boot\*.txt`, `update.log`, `pip-*.log`; `RUMBAPY_LOG_LEVEL=DEBUG` para mais detalhe, nunca com texto de tela).
 
 ---
 

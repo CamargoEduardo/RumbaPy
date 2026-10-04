@@ -5,6 +5,30 @@
 > Base: auditoria do código (`docs/KNOWN_ISSUES.md`) e engenharia reversa do RUMBA
 > (`docs/RUMBA_EHLLAPI.md`, `docs/RUMBA_AMBIENTE.md`). Escrito em 2026-10-03.
 
+> **Status (2026-10-04): documento HISTÓRICO.** Este plano foi refinado pela proposta e pelas quatro críticas em
+> `docs/interno/design/`, consolidado na especificação normativa [`ESPECIFICACAO_V2.md`](ESPECIFICACAO_V2.md) e
+> **implementado na v2.0.0** (branch `dev`). A arquitetura vigente está em [`../ARCHITECTURE.md`](../ARCHITECTURE.md);
+> problemas e pendências em [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md). O texto abaixo foi mantido como registro das
+> intenções; onde ele diverge do código, vale o código e a especificação.
+>
+> | ADR / Fase | O que aconteceu na v2.0.0 |
+> |---|---|
+> | ADR-01 EHLLAPI como backend | ✅ mantido (worker 32-bit sobre a `ehlapi32.Dll`) |
+> | ADR-02 worker stdlib-only embarcado | ✅ `_worker/` roda dos arquivos do pacote 64-bit (`-I -S` + BOOT); nada instalado no 32-bit |
+> | ADR-03 um worker por letra, uma thread de DLL | ✅ `_worker/server.py` (T-dll única, lease) |
+> | ADR-04 named pipe autenticado | ✅ `_ipc.py` (DACL + HMAC próprio; **sem** `multiprocessing.connection.Client/Listener`) |
+> | ADR-05 abertura em cascata | ✅ Web Launcher (padrão) → fallback IE (sem launcher, ou forçado com `RUMBAPY_LAUNCH=ie`); "reaproveitar" virou `attach` e `open(reuse=True)` |
+> | ADR-06 prazo em tudo + watchdog | ✅ `_worker/watchdog.py` (limites por função, `os._exit`) |
+> | ADR-07 auto-update 2.0 | ✅ com mudanças: **sem reexecução automática** (sempre `UpdateRequired`), `_bootstrap.py` congelado + `heal`, sem Git obrigatório, fail-closed sem rede |
+> | ADR-08 texto e coordenadas | ✅ `_codec.py` (cp1252, NUL, NFC) |
+> | ADR-09 provisionamento do Python 32-bit | ⏳ adiado para a v2.1 (D3/Q7); a v2.0 só procura e valida (`_runtime32.py`) |
+> | ADR-10 backends plugáveis | 🟡 só a interface `Backend` (testes); `LocalBackend` e TN3270 direto cortados (K.4) |
+> | Fase 6 TN3270 direto | ✖ fora (decisão: nunca sem aval de Segurança/Mainframe) |
+>
+> Decisões da §9: D1 (offline) → Q1 [sem válvula na v2.0]; D3 → Q7 [v2.1]; D4 → segue `refs/heads/master`;
+> D5 → Q11 [`with` não fecha; `close_on_exit=True` opcional]; D7 → Q8 [pendente]. Lista completa em
+> `ESPECIFICACAO_V2.md` §K.2 e `KNOWN_ISSUES.md` §C.
+
 ---
 
 ## 0. Resumo executivo
@@ -319,6 +343,9 @@ Sem mudar arquitetura; ataca os itens críticos de `KNOWN_ISSUES.md`.
 5. ✅ `HostCharacterSet=56` = `CHARSET_SWEDISH_EURO` → cp1143 (pela type library).
 6. ⏳ Tempo real de `WD_Wait` com teclado travado (esperado: TWAIT ≈ 60 s) — exige provocar X SYSTEM; não será testado em produção.
 7. ✅ Duas instâncias da mesma letra → diálogo "Short Name already in use" (requisito: fechar todas antes de abrir).
+8. ✅ (2026-10-04, v2) Roteiros L1–L6, L8, L9 e "compat" executados; achados novos (fechar um terminal derruba a
+   HLLAPI dos outros; `WD_QuerySessions` que trava no encerramento; `Internet Explorer_Hidden` visível; um processo
+   de launcher por perfil) em `RUMBA_EHLLAPI.md` §11.1.1. Pendentes: L3b e L7.
 
 ## 9. Decisões que dependem de você
 

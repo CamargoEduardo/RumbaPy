@@ -727,7 +727,7 @@ pd.DataFrame(resultado).to_excel("resultado.xlsx", index=False)
 ```
 Outros exemplos: compat sem alterações (`RumbaClient("D").logon_cics(...)`); IMS (`rumbapy.open("A")` +
 `t.ims.logon`); lista paginada (`tela.table(...)` + `t.pf(8)` + `t.wait_change(since=tela)`); Jupyter (`t = rumbapy.attach("D")`,
-`t.screen`, `t.screen.input_fields`, e **`t.release()` ao terminar**).
+`t.screen`, `t.snapshot(fields=True).input_fields` (o `t.screen` não traz campos), e **`t.release()` ao terminar**).
 
 ### B.11 Prazos padrão (todos sobrescrevíveis por argumento)
 
