@@ -1,6 +1,6 @@
 """Receita CICS (B.8): logon pela tela "Select CICS Environment" -> signon -> "Signon is complete".
 
-Âncoras (validadas ao vivo: MENU e MENU_FIELD; as demais vêm da v0.1.5 e ficam a validar no roteiro L6):
+Âncoras (todas validadas ao vivo no BRAZIL_D: MENU/MENU_FIELD no L1; signon, senha oculta e "Signon" no L6, 2026-10-04):
 o texto do menu na linha 14, o campo do ambiente em (22,56), "TERMINAL" em (4,6), usuário em (12,21), senha em
 (13,21) — **oculta** —, mensagens em (19,19) e "Signon" em (5,20) depois do logon.
 """

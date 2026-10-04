@@ -633,8 +633,8 @@ senha, a receita confere que o campo de destino é **oculto** (`Field.hidden`), 
 class Cics:   # perfis kind="cics"
     MENU   = ("Select CICS Environment", 14)        # texto na linha 14 (validado ao vivo: começa em (14,26))
     MENU_FIELD = (22, 56)                           # desprotegido (validado ao vivo)
-    SIGNON = ("TERMINAL", 4, 6); USER = (12, 21); PASSWORD = (13, 21)   # [a validar no L6, lendo]
-    OK = ("Signon", 5, 20); MSG = (19, 19)          # [a validar no L6]
+    SIGNON = ("TERMINAL", 4, 6); USER = (12, 21); PASSWORD = (13, 21)   # validado ao vivo (L6, 2026-10-04)
+    OK = ("Signon", 5, 20); MSG = (19, 19)          # validado ao vivo (L6): logon em 1,2 s, senha em campo oculto
     def logon(self, user: str, password: str, *, environment: str = "C", timeout: float | None = None) -> Screen
     def check(self, screen: Screen) -> None         # HostError se screen.get(5, 31, 19) == "E R R O   G R A V E"
     def start_transaction(self, code: str, *, row: int = 1, col: int = 2,
@@ -1220,7 +1220,7 @@ instância de outro perfil (R6b). Diálogos conhecidos:
 | Título | Texto contém | Durante `open` | Durante `close` |
 |---|---|---|---|
 | `Telnet3270 Application` | `Connecting To Address` | normal; não tocar | não tocar (o `WM_CLOSE` da janela principal basta — validado) |
-| `RUMBA API Service Control` | `Short Name already in use` | outra janela segura a letra (E.5 passo 6) | `click` no botão de texto `OK` **[a validar no L2]** |
+| `RUMBA API Service Control` | `Short Name already in use` | outra janela segura a letra (E.5 passo 6) | `click` no botão de texto `OK` (validado ao vivo no L2, **antes** do WM_CLOSE do dono: A.14 m) |
 | `HLLAPI ERROR` | `Exceeded maximum number of clients` | `ClientTableFull`; **não clicar** | idem |
 | outro | — | não tocar; texto sanitizado no diagnóstico | só no `close`, após 3 s: `post_close(diálogo)` (equivale a Cancelar/X); **nunca** botões afirmativos |
 
@@ -1244,7 +1244,8 @@ Usado por `rumbapy.close`, `Session.close`, `close_terminal()` e `open(reuse=Fal
 8. Devolve o nº de janelas de instância fechadas.
 ```
 Validado ao vivo: `WM_CLOSE` fecha a janela do launcher em ~0,5 s sem confirmação e desregistra a letra; com duas
-instâncias, fecha ambas. **[a validar no L6]**: confirmação ao fechar com sessão logada (R32).
+instâncias, fecha ambas. Validado ao vivo (L6): fechar a sessão CICS **logada** não mostra diálogo de confirmação
+(WM_CLOSE fecha em ~0,5 s; R32).
 
 ### E.5 `open(profile, *, reuse, window, timeout=T)` (`_launcher.open_terminal`)
 
