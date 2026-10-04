@@ -240,8 +240,6 @@ open(out, "w", encoding="utf-8").write(json.dumps(rep))
 def l3(rumbapy: Any, report: dict[str, Any], py32: str, code: Path) -> None:
     """L3: attach -> release -> attach de OUTRO processo; 2º dono -> TerminalInUse; close com dono vivo (evict);
     reciclagem por shutdown e read de novo."""
-    from rumbapy import _bridge
-
     t = timed(report, "open", lambda: rumbapy.open("D", window="minimized", timeout=150, python32=py32))
     hwnd = t.info.hwnd
     t.release()
@@ -265,8 +263,9 @@ def l3(rumbapy: Any, report: dict[str, Any], py32: str, code: Path) -> None:
     report["child_after_close"] = json.loads(out.read_text(encoding="utf-8"))
     t2 = timed(report, "reopen", lambda: rumbapy.open("D", window="minimized", timeout=150, python32=py32))
     report["reopen"] = t2.info.to_wire()
-    old_pid = getattr(t2._backend, "worker_pid", None) if hasattr(t2, "_backend") else None
-    _bridge.get_worker("D", "admin").shutdown("L3: reciclagem")
+    backend = getattr(t2, "_backend", None)
+    old_pid = getattr(backend, "worker_pid", None)
+    backend.shutdown("L3: reciclagem")                 # pela conexão do próprio dono (C.6.3: o dono pode parar)
     time.sleep(2.0)
     try:
         report["read_after_recycle"] = timed(report, "read_after_recycle", lambda: t2.read(14, 26, 24))
