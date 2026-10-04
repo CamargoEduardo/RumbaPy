@@ -279,16 +279,38 @@ def test_world_evict_revokes_the_owner_like_the_real_worker(world: World) -> Non
     assert world.admin.evict("close")["evicted_owner"] is not None
 
 
-def test_sessions_is_queried_only_after_the_launcher_process_exits(world: World) -> None:
-    # ao vivo (2026-10-04): WD_QuerySessions durante o encerramento do emulador travou a DLL (watchdog de 20 s)
+def test_dll_is_not_queried_once_the_hllapi_instance_exited(world: World) -> None:
+    # ao vivo (2026-10-04, L1/L3): WD_QuerySessions logo depois do encerramento do emulador travou a DLL (watchdog);
+    # janela fechada + processo da instância do HLLAPI saído já provam o desregistro
     world.exit_delay = 0.3
     win = world.add_launcher_window()
     world.alive[win.pid] = 1000 + win.pid
     world.worker = {"pid": 77, "hwnd": win.hwnd, "hwnd_pid": win.pid}
     assert world.launcher().close_all("D") == 1
-    exit_at = world.index("exit", win.pid)
-    sessions = [i for i, e in enumerate(world.timeline) if e[:3] == ("backend", "admin", "sessions")]
-    assert sessions and all(i > exit_at for i in sessions)
+    assert world.index("exit", win.pid) > world.index("user32", "post_close", win.hwnd)
+    assert not [e for e in world.timeline if e[:3] == ("backend", "admin", "sessions")]
+
+
+def test_dll_is_queried_after_the_exit_wait_when_the_process_does_not_exit(world: World) -> None:
+    world.exit_delay = None                                       # o processo não sai (ex.: diálogo do .NET)
+    win = world.add_launcher_window()
+    world.alive[win.pid] = 1000 + win.pid
+    world.worker = {"pid": 77, "hwnd": win.hwnd, "hwnd_pid": win.pid}
+    start = world.clock()
+    assert world.launcher().close_all("D") == 1
+    sessions = [e for e in world.timeline if e[:3] == ("backend", "admin", "sessions")]
+    assert sessions and world.clock() - start >= 5.0              # só depois do prazo de saída (PROCESS_EXIT_S)
+
+
+def test_dll_is_queried_when_the_letter_belongs_to_a_window_we_did_not_close(world: World) -> None:
+    world.exit_delay = 0.3
+    win = world.add_launcher_window(register=None)
+    world.alive[win.pid] = 1000 + win.pid
+    world.worker = {"pid": 77, "hwnd": 0x7777, "hwnd_pid": 4242}  # registro aponta para outro processo
+    world.fake.add_session("D", hwnd=0x7777, pid=4242)
+    with pytest.raises(InstanceNotClosable):
+        world.launcher().close_all("D", timeout=3.0)
+    assert [e for e in world.timeline if e[:3] == ("backend", "admin", "sessions")]
 
 
 def test_process_that_hosts_another_profile_is_not_awaited(world: World) -> None:
@@ -312,4 +334,10 @@ def test_stuck_process_waits_at_most_the_exit_cap(world: World) -> None:
     start = world.clock()
     assert world.launcher().close_all("D") == 1
     assert 5.0 <= world.clock() - start < 7.0                     # PROCESS_EXIT_S e depois a conferência
+
+
+def test_query_sessions_has_a_short_watchdog_limit() -> None:
+    from rumbapy._worker.watchdog import LIMITS
+
+    assert LIMITS["WD_QuerySessions"] == 8.0                      # ao vivo: travou para sempre após saída do emulador
 

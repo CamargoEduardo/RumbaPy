@@ -1,7 +1,7 @@
 """T-watch (D.4): tick de 100 ms que vigia a chamada em voo à DLL, a janela da sessão, o evento de parada e o idle.
 
-``Hllapi`` envolve cada chamada com ``inflight(func)`` (limites: ``WD_ConnectPS`` 15 s; ``WD_DisconnectPS``/
-``WD_ResetSystem`` no encerramento 5 s; demais 20 s). A cada tick:
+``Hllapi`` envolve cada chamada com ``inflight(func)`` (limites: ``WD_ConnectPS`` 15 s; ``WD_QuerySessions`` 8 s;
+``WD_DisconnectPS``/``WD_ResetSystem`` no encerramento 5 s; demais 20 s). A cada tick:
 
 a) suspensão (R21): intervalo desde o tick anterior > 5 s -> rearma ``inflight.t0`` e a base do idle;
 b) estouro do ``inflight`` -> ``fire("hung")``;
@@ -36,7 +36,9 @@ import os
 
 logger = logging.getLogger(__name__)
 
-LIMITS: dict[str, float] = {"WD_ConnectPS": 15.0}
+# WD_QuerySessions responde em < 1 s (ao vivo: 0,2–0,8 s no registro); logo depois de um emulador sair já travou para
+# sempre dentro da DLL (2026-10-04): 8 s em vez de 20 s encurtam o custo do travamento (o worker é reciclado)
+LIMITS: dict[str, float] = {"WD_ConnectPS": 15.0, "WD_QuerySessions": 8.0}
 DEFAULT_LIMIT = 20.0
 STOP_LIMIT = 5.0                         # DisconnectPS/ResetSystem durante o encerramento
 STOP_FUNCS = frozenset({"WD_DisconnectPS", "WD_ResetSystem"})

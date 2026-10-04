@@ -455,10 +455,25 @@ class Launcher:
             listing = ", ".join(f"'{inst.safe_title}' (PID {inst.pid})" for inst in survivors)
             raise CloseFailed.make(n=len(survivors), perfil=name, lista=listing, terminal=letter)
         if verify:                                   # 6.
-            self._wait_processes_exit(letter, exiting, min(deadline, self.clock() + PROCESS_EXIT_S))
-            until = deadline if found else min(deadline, self.clock() + NOT_CLOSABLE_GRACE)
-            self._verify_unregistered(profile, adm, until, reg)
+            alive = self._wait_processes_exit(letter, exiting, min(deadline, self.clock() + PROCESS_EXIT_S))
+            if self._hllapi_instance_gone(reg, reg_hwnd, found, exiting, alive):
+                # ao vivo (2026-10-04, L1/L3): WD_QuerySessions logo depois de o emulador sair pode travar a DLL
+                # (watchdog + reciclagem). Janela fechada + processo saído já provam o desregistro.
+                logger.info("close %s: a instância do HLLAPI saiu; conferência pela DLL dispensada", letter)
+            else:
+                until = deadline if found else min(deadline, self.clock() + NOT_CLOSABLE_GRACE)
+                self._verify_unregistered(profile, adm, until, reg)
         return closed                                # 8.
+
+    @staticmethod
+    def _hllapi_instance_gone(reg: dict[str, Any] | None, reg_hwnd: int | None, found: list[Instance],
+                              exiting: dict[int, int | None], alive: set[int]) -> bool:
+        """A instância que o worker conhecia (``hwnd``/``hwnd_pid`` do registro) foi uma das fechadas e o processo
+        dela saiu? Sem registro, ou com a letra registrada por janela que não fechamos, a DLL ainda é consultada."""
+        pid = reg.get("hwnd_pid") if reg else None
+        if not isinstance(pid, int) or not pid:
+            pid = next((inst.pid for inst in found if reg_hwnd and inst.hwnd == reg_hwnd), None)
+        return isinstance(pid, int) and pid in exiting and pid not in alive
 
     def _dismiss_short_name(self, profile: Profile, found: list[Instance]) -> None:
         """Passo 3b (ao vivo, 2026-10-04, L2): o diálogo modal "Short Name already in use" recebe OK ANTES do WM_CLOSE
@@ -493,7 +508,7 @@ class Launcher:
                 out[inst.pid] = self.process_created(inst.pid)
         return out
 
-    def _wait_processes_exit(self, letter: str, exiting: dict[int, int | None], until: float) -> None:
+    def _wait_processes_exit(self, letter: str, exiting: dict[int, int | None], until: float) -> set[int]:
         """Passo 5b (ao vivo, 2026-10-04): ``WD_QuerySessions`` chamado enquanto o emulador encerra pode travar
         dentro da DLL (watchdog de 20 s + reciclagem do worker). Antes da conferência do passo 6, espera SEM chamar
         a DLL que os processos das instâncias fechadas saiam (ao vivo: 0,3 s depois do WM_CLOSE na janela principal)."""
@@ -506,6 +521,7 @@ class Launcher:
         if pending:
             logger.info("close %s: processo(s) %s ainda saindo após o WM_CLOSE; conferindo o desregistro assim mesmo",
                         letter, sorted(pending))
+        return set(pending)
 
     def _nudge(self, profile: Profile, survivors: list[Instance]) -> bool:
         """Aos 3 s e 8 s: trata os diálogos de cada sobrevivente (tabela E.3) e manda outro WM_CLOSE."""
