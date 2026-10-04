@@ -40,7 +40,8 @@ import io
 import os
 
 REPO = Path(__file__).resolve().parents[2]
-GUARDS = {"l1": "readonly", "l2": "readonly", "l3": "readonly", "l4": "text", "l6": "login", "l9": "readonly"}
+GUARDS = {"l1": "readonly", "l2": "readonly", "l3": "readonly", "l4": "text", "l6": "login", "l9": "readonly",
+          "compat": "login"}
 LAUNCHER = r"C:\Program Files (x86)\Micro Focus\Host Access Web Launcher\Host Access Web Launcher.exe"
 PORTAL = "https://rumba.srv.volvo.com/rumba694/w2hlegacy/profpro/{profile}.html"
 
@@ -339,6 +340,30 @@ def l6(rumbapy: Any, report: dict[str, Any], py32: str) -> None:
     report["password_found_anywhere"] = any(password in text for text in texts)     # tem de ser False
 
 
+def compat(rumbapy: Any, report: dict[str, Any], py32: str) -> None:
+    """Script no estilo da v0.1.5, sem alteração: RumbaClient('D').logon_cics -> copy_ps_to_string -> close_terminal."""
+    cfg = configparser.ConfigParser()
+    if not cfg.read(REPO / "config.ini", encoding="utf-8") or not cfg.has_section("cics"):
+        raise SystemExit("config.ini sem a seção [cics] (id/password)")
+    user, password = cfg.get("cics", "id"), cfg.get("cics", "password")
+    from rumbapy import RumbaClient
+
+    client = RumbaClient("D", python32bit_path=py32)
+    report["logon_cics"] = timed(report, "logon_cics", lambda: client.logon_cics(user, password))
+    report["connected"] = client.connected
+    report["copy_ps_to_string"] = client.copy_ps_to_string(5, 20, 6)
+    report["screen_load"] = timed(report, "screen_load", lambda: client.screen_load(5, 20, "Signon"))
+    with DialogWatch(rumbapy) as watch:
+        report["close_terminal"] = timed(report, "close_terminal", client.close_terminal)
+    report["dialogs_during_close"] = watch.seen
+    texts = [repr(client), json.dumps(report, ensure_ascii=False, default=str)]
+    home = Path(os.environ["RUMBAPY_HOME"])
+    for path in home.rglob("*"):
+        if path.is_file() and path.suffix in (".log", ".txt", ".json"):
+            texts.append(path.read_text(encoding="utf-8", errors="replace"))
+    report["password_found_anywhere"] = any(password in text for text in texts)     # tem de ser False
+
+
 def l9(rumbapy: Any, report: dict[str, Any], py32: str) -> None:
     """L9: com BRAZIL_Z aberto, open("D"): processos do launcher (instância única?) e close de D sem afetar Z."""
     z = timed(report, "open_z", lambda: rumbapy.open("Z", window="minimized", timeout=150, python32=py32))
@@ -402,7 +427,7 @@ def main() -> int:
         if args.script == "l3":
             l3(rumbapy, report, py32, code)
         else:
-            {"l1": l1, "l2": l2, "l4": l4, "l6": l6, "l9": l9}[args.script](rumbapy, report, py32)
+            {"l1": l1, "l2": l2, "l4": l4, "l6": l6, "l9": l9, "compat": compat}[args.script](rumbapy, report, py32)
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {getattr(exc, 'message', exc)}"
         report["traceback"] = traceback.format_exc().splitlines()[-12:]
