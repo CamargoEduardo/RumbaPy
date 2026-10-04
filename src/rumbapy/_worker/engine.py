@@ -10,7 +10,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from ..errors import FieldNotFound, HllapiError, ParameterError, ProtectedField, Truncated
+from ..errors import (FieldNotFound, HllapiError, NotConnected, ParameterError, ProtectedField, SessionReplaced,
+                      Truncated)
 from .mask import MaskState, hidden_in_span, is_hidden, is_protected
 from ..keys import AIDS, Key, tokenize_mnemonic
 from .. import _codec, _win32
@@ -210,6 +211,25 @@ class Engine:
         if details:
             result["details"] = details
         return result
+
+    def reconnect_same(self) -> None:
+        """A DLL derrubou a conexão (rc 1) com a sessão ainda aberta — ao vivo (2026-10-04, L9): FECHAR outro
+        terminal derruba as conexões HLLAPI das demais sessões. Refaz ``ConnectPS`` (+ NORESET) da mesma letra e
+        confere que é a MESMA instância (hwnd); hwnd diferente -> ``SessionReplaced`` (nunca segue em outra janela)."""
+        letter, old_hwnd = self.letter, self.hwnd
+        if not letter:
+            raise NotConnected.make(L=self.bound_letter or "?", terminal=self.letter)
+        with self.lock:
+            self.connected = False
+        result = self.connect(letter)
+        if not result.get("connected"):
+            self._set_disconnected("resync")
+            raise NotConnected.make(L=letter, terminal=letter)
+        if self.hwnd != old_hwnd:
+            logger.warning("reconexão: o HWND mudou (%s -> %s); instância diferente", old_hwnd, self.hwnd)
+            self.hll.disconnect()
+            self._set_disconnected("resync")
+            raise SessionReplaced.make(L=letter, terminal=letter)
 
     def _window_pid(self, hwnd: int) -> int:
         try:
@@ -445,7 +465,7 @@ class Engine:
             self.last_rc = rc
             if rc == 0:
                 continue
-            if rc in (2, 20):
+            if rc in (1, 2, 20):                 # 1 = sem conexão: o DLL recusou antes de enviar (F.6)
                 delivery = "none" if i == 0 else "partial"
             elif rc in (4, 5):
                 delivery = "none" if i == 0 and _units(chunk) == 1 else "partial"

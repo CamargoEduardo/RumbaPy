@@ -151,7 +151,7 @@ def test_write_too_long_is_truncated_before_copying() -> None:
 
 def test_write_rc_from_the_dll() -> None:
     fake, backend = form_backend()
-    fake.rc_override = {"WD_CopyStringToPS": [6, 5, 7, 1]}
+    fake.rc_override = {"WD_CopyStringToPS": [6, 5, 7, 1, 1]}     # rc 1: reconecta, repete 1x e falha de novo
     with pytest.raises(errors.Truncated) as info:
         backend.write(5, 10, "abc", secret=False)
     assert info.value.delivery == "partial" and info.value.rc == 6
@@ -183,7 +183,8 @@ def test_write_unformatted_screen_limit_is_end_of_screen() -> None:
     (["ab"], [2], "none", 0),
     (["ab", "cd"], [0, 20], "partial", 1),
     (["ab"], [9], "unknown", 0),
-    (["@E"], [1], "unknown", 0),
+    (["@E"], [1, 1], "none", 0),               # rc 1 = sem conexão: recusado antes de enviar (repete 1x e falha)
+    (["ab", "@E"], [0, 1], "partial", 1),      # queda no 2º chunk: nunca repete
 ])
 def test_send_delivery_rules(chunks: list[str], forced: list[int], delivery: str, sent: int) -> None:
     fake, backend = form_backend()
@@ -481,4 +482,46 @@ def test_undefined_key_names_only_the_keys_of_the_chunk() -> None:
     with pytest.raises(errors.UndefinedKey) as info:
         backend.send(["XY@T"], secret=True)                          # com secret nem o nome da tecla
     assert info.value.message.startswith("Tecla '?' desconhecida.")
+
+
+# ------------------------------------------------------------------------------------------- queda da conexão pela DLL
+# ao vivo (2026-10-04, L9): fechar OUTRO terminal derruba as conexões HLLAPI das demais sessões (rc 1 na próxima chamada)
+
+def test_dll_drop_reconnects_and_repeats_reads(caplog: pytest.LogCaptureFixture) -> None:
+    fake, backend = form_backend()
+    before = calls(fake, "WD_ConnectPS")
+    fake.connected = None                                           # a DLL "esqueceu" a conexão
+    assert backend.snapshot().text.startswith("TITULO")
+    assert backend.read(1, 1, 6).text == "TITULO"
+    assert calls(fake, "WD_ConnectPS") == before + 1                  # uma reconexão
+    assert backend.engine.connected and backend.engine.hwnd == 0x1000
+    assert "foi refeita; repetindo 1x" in caplog.text
+
+
+def test_dll_drop_repeats_input_refused_at_the_first_call() -> None:
+    fake, backend = form_backend()
+    fake.connected = None
+    backend.write(5, 10, "ab", secret=False)                          # recusado antes de escrever: repete
+    assert fake.sessions["D"].line(5)[9:11] == "ab"
+    fake.connected = None
+    backend.send(["@E"], secret=False)
+    assert len(fake.sessions["D"].aid_log) == 1                       # exatamente uma AID
+
+
+def test_partial_send_after_a_dll_drop_is_never_repeated() -> None:
+    fake, backend = form_backend()
+    fake.rc_override = {"WD_SendKey": [0, 1]}                         # o 1º chunk entrou; a queda veio no 2º
+    with pytest.raises(errors.NotConnected) as info:
+        backend.send(["abc", "@E"], secret=False)
+    assert info.value.delivery == "partial"
+    assert fake.sessions["D"].aid_log == []                           # a AID nunca foi reenviada
+
+
+def test_dll_drop_onto_another_instance_is_session_replaced() -> None:
+    fake, backend = form_backend()
+    fake.connected = None
+    fake.sessions["D"].hwnd = 0x2000                                  # a letra agora é de outra janela
+    with pytest.raises(errors.SessionReplaced):
+        backend.read(1, 1, 6)
+    assert backend.engine.connected is False
 

@@ -180,6 +180,14 @@ class Dispatcher:
         elif engine.last_disconnect in ("evict", "resync", "stop"):
             raise SessionReplaced.make(L=engine.letter or engine.bound_letter or "?", terminal=engine.letter)
 
+    def _may_reconnect(self, spec: _protocol.Op, exc: NotConnected) -> bool:
+        """Repetir depois de reconectar? Só com o worker conectado (a queda veio da DLL, não do cliente) e só se nada
+        pode ter chegado ao host: leitura (idempotente) ou entrada cuja 1ª chamada à DLL já foi recusada (rc 1 =
+        sem conexão, ``delivery`` ``none``). Nunca reenvia entrada parcial (B.1)."""
+        if not self.engine.connected or not spec.needs_connection or spec.name in ("connect", "disconnect"):
+            return False
+        return spec.idempotent or exc.delivery in (None, "none")
+
     def handle(self, op: str, args: dict, ctx: JobCtx) -> dict:
         engine = self.engine
         t0 = time.perf_counter()
@@ -196,7 +204,15 @@ class Dispatcher:
             self._check_instance(spec, ctx)
             if spec.needs_connection and not engine.connected:
                 raise NotConnected.make(L=engine.letter or engine.bound_letter or "?", terminal=engine.letter)
-            return self.HANDLERS[op](engine, args, ctx)
+            try:
+                return self.HANDLERS[op](engine, args, ctx)
+            except NotConnected as exc:
+                if not self._may_reconnect(spec, exc):
+                    raise
+                engine.reconnect_same()           # SessionReplaced/NotConnected se a instância mudou ou sumiu
+                logger.warning("op=%s id=%s: a conexão HLLAPI caiu com a sessão aberta (rc 1) e foi refeita; repetindo "
+                               "1x", op, ctx.id)
+                return self.HANDLERS[op](engine, args, ctx)
         except RumbaError as exc:
             outcome = f"erro={type(exc).__name__}"
             raise
