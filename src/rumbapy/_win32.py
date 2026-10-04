@@ -496,22 +496,24 @@ def hllapi_error_dialog_visible(pid: int | None = None) -> bool:
 
 # ------------------------------------------------------------------------------------------- rede (só leitura)
 
-def tcp_listener_pid(port: int) -> int | None:
-    """PID que escuta em ``127.0.0.1:<port>`` (ou ``0.0.0.0``) (``GetExtendedTcpTable``; E.8)."""
+def tcp_listener_pids(port: int) -> list[int]:
+    """TODOS os PIDs que escutam em ``127.0.0.1:<port>`` ou ``0.0.0.0:<port>``, sem repetição, na ordem da tabela
+    (``GetExtendedTcpTable``, só leitura; com ``SO_REUSEADDR`` pode haver mais de um; E.8)."""
     size = wintypes.DWORD(0)
-    buf = None
+    raw = b""
     for _attempt in range(5):
         buf = ctypes.create_string_buffer(max(size.value, 4))
         rc = _GetExtendedTcpTable(buf, ctypes.byref(size), False, _AF_INET, _TCP_TABLE_OWNER_PID_LISTENER, 0)
         if rc == _NO_ERROR:
+            raw = buf.raw
             break
         if rc != _ERROR_INSUFFICIENT_BUFFER:
             raise ctypes.WinError(rc)
     else:
-        return None
-    raw = buf.raw
+        return []
     count = int.from_bytes(raw[0:4], "little")
     loopback = int.from_bytes(bytes([127, 0, 0, 1]), "little")
+    pids: list[int] = []
     for i in range(count):
         row = raw[4 + i * 24: 4 + (i + 1) * 24]                 # MIB_TCPROW_OWNER_PID: 6 DWORDs
         if len(row) < 24:
@@ -519,6 +521,13 @@ def tcp_listener_pid(port: int) -> int | None:
         local_addr = int.from_bytes(row[4:8], "little")
         local_port = int.from_bytes(row[8:12], "little") & 0xFFFF
         local_port = ((local_port & 0xFF) << 8) | (local_port >> 8)       # ordem de rede -> host
-        if local_port == port and local_addr in (loopback, 0):
-            return int.from_bytes(row[20:24], "little")
-    return None
+        pid = int.from_bytes(row[20:24], "little")
+        if local_port == port and local_addr in (loopback, 0) and pid not in pids:
+            pids.append(pid)
+    return pids
+
+
+def tcp_listener_pid(port: int) -> int | None:
+    """O 1º PID que escuta em ``127.0.0.1:<port>`` (ou ``0.0.0.0``) (E.8)."""
+    pids = tcp_listener_pids(port)
+    return pids[0] if pids else None

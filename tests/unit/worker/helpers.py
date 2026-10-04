@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rumbapy import _buildid, _ipc, _paths, _protocol, _win32
+from rumbapy import _buildid, _bridge, _ipc, _paths, _protocol, _win32
 
 import subprocess
 import secrets
@@ -24,9 +24,7 @@ import os
 
 REPO = Path(__file__).resolve().parents[3]
 PKGDIR = REPO / "src" / "rumbapy"
-BOOT = ('import os,sys,types; d=sys.argv[1]; m=types.ModuleType("rumbapy"); m.__path__=[d]; '
-        'm.__file__=os.path.join(d,"__init__.py"); sys.modules["rumbapy"]=m; '
-        'from rumbapy._worker.main import main; sys.exit(main(sys.argv[2:]))')
+BOOT = _bridge.BOOT          # texto da D.1 (teste de contrato em tests/unit/client/bridge/test_boot_contract.py)
 IS_32 = struct.calcsize("P") == 4
 
 

@@ -20,12 +20,15 @@ import pytest
 from tests.e2e.update.support import PKG_SRC, REPO_ROOT, child_env, run_python
 
 BUILD_DIR = REPO_ROOT / "_build"
-# arquivos que o wheel TEM que ter; os da Onda 2 só são exigidos depois que existirem em src/ (TODO(P-G): todos)
+# arquivos que o wheel TEM que ter (inclusive o script do fallback IE, E.7)
 REQUIRED = ["__init__.py", "__main__.py", "_bootstrap.py", "_update.py", "_role.py", "_version.py", "_buildid.py",
             "_paths.py", "_locks.py", "_log.py", "errors.py", "keys.py", "screen.py", "profiles.py", "client.py",
-            "server.py", "api.py", "_worker/__init__.py", "_worker/guard.py", "_worker/hllapi.py"]
-WAVE2 = ["_ie_open.js", "session.py", "compat.py", "_bridge.py", "_launcher.py", "_runtime32.py", "_doctor.py",
-         "_legacy.py", "_instances.py", "_ipc.py", "_worker/main.py", "recipes/__init__.py"]
+            "server.py", "api.py", "_worker/__init__.py", "_worker/guard.py", "_worker/hllapi.py",
+            "_ie_open.js", "session.py", "compat.py", "_bridge.py", "_launcher.py", "_runtime32.py", "_doctor.py",
+            "_legacy.py", "_instances.py", "_ipc.py", "_worker/main.py", "recipes/__init__.py", "recipes/cics.py",
+            "recipes/ims.py", "waits.py", "_backend.py", "_user32.py", "_win32.py", "_codec.py", "_protocol.py",
+            "_types.py", "_worker/server.py", "_worker/dispatch.py", "_worker/engine.py", "_worker/rc.py",
+            "_worker/structs.py", "_worker/mask.py", "_worker/watchdog.py"]
 
 
 @pytest.fixture(scope="module")
@@ -79,10 +82,8 @@ def test_wheel_contents(wheel: Path, backend: ModuleType) -> None:
     assert not any("__pycache__" in n or n.endswith(".pyc") for n in names)
 
 
-@pytest.mark.parametrize("rel", REQUIRED + WAVE2)
+@pytest.mark.parametrize("rel", REQUIRED)
 def test_wheel_has_required_file(wheel: Path, rel: str) -> None:
-    if rel in WAVE2 and not (PKG_SRC / rel).exists():
-        pytest.skip(f"{rel} ainda não existe (Onda 2)")
     with zipfile.ZipFile(wheel) as zf:
         assert f"rumbapy/{rel}" in zf.namelist()
 

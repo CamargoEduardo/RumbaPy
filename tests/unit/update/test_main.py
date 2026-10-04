@@ -80,15 +80,6 @@ def test_commands_check_update_first(monkeypatch: pytest.MonkeyPatch, capsys: py
     assert "RumbaPy atualizado para 2.0.1 (bbbbbbb). Rode o comando de novo." in capsys.readouterr().err
 
 
-def test_doctor_and_close_until_wave2(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    if hasattr(rumbapy, "doctor") or hasattr(rumbapy, "close"):
-        pytest.skip("doctor/close já existem (Onda 2): coberto pelos testes de P-D/P-E")
-    assert cli.main(["doctor"]) == 1
-    assert cli.main(["close", "D"]) == 1
-    err = capsys.readouterr().err
-    assert "doctor" in err and "pelo X" in err
-
-
 def test_close_and_doctor_delegate(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     calls: list[object] = []
 

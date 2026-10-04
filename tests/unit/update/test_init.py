@@ -37,7 +37,8 @@ def test_user_role_exports_and_eager_imports(tmp_path: Path) -> None:
     code = (
         "import json, sys, rumbapy\n"
         "from rumbapy import _buildid\n"
-        "mods = ['errors','keys','screen','waits','profiles','client','_backend']\n"
+        "mods = ['errors','keys','screen','waits','profiles','session','compat','client','_bridge','_backend',\n"
+        "        '_launcher','_runtime32','_doctor','_legacy']\n"
         "present = [m for m in mods if (rumbapy.__path__[0] + '/' + m + '.py') and "
         "__import__('os').path.exists(rumbapy.__path__[0] + '/' + m + '.py')]\n"
         "print(json.dumps({'role': rumbapy._ROLE, 'version': rumbapy.__version__, 'all': rumbapy.__all__,\n"
@@ -45,7 +46,8 @@ def test_user_role_exports_and_eager_imports(tmp_path: Path) -> None:
         "  'loaded': [m for m in present if 'rumbapy.' + m not in sys.modules],\n"
         "  'attrs': [hasattr(rumbapy, a) for a in ('client', 'errors', 'profiles', 'RumbaClient', 'Key', 'Screen',\n"
         "            'Field', 'Cursor', 'OIA', 'UpdateRequired', 'RumbaError')],\n"
-        "  'client_cls': rumbapy.RumbaClient.__module__}))\n"
+        "  'client_cls': rumbapy.RumbaClient.__module__, 'doctor': 'doctor' in rumbapy.__all__\n"
+        "  and callable(rumbapy.open) and callable(rumbapy.attach) and callable(rumbapy.close)}))\n"
     )
     out = last_json(run(code, tmp_path))
     assert isinstance(out, dict)
@@ -54,8 +56,8 @@ def test_user_role_exports_and_eager_imports(tmp_path: Path) -> None:
     assert all(out["attrs"])
     assert {"RumbaClient", "Key", "Screen", "Field", "Cursor", "OIA", "RumbaError", "UpdateRequired"} <= set(out["all"])
     assert "open" not in out["all"] and "close" not in out["all"]  # I34
-    expected_module = "rumbapy.compat" if (PKG_SRC / "compat.py").exists() else "rumbapy.client"
-    assert out["client_cls"] == expected_module
+    assert out["client_cls"] == "rumbapy.compat"
+    assert out["doctor"] is True
 
 
 def test_star_import_works(tmp_path: Path) -> None:
@@ -114,12 +116,16 @@ def test_existing_module_failing_is_not_masked(tmp_path: Path, copy: Path) -> No
     assert "ModuleNotFoundError: No module named 'modulo_que_nao_existe_xyz'" in done.stderr
 
 
-def test_missing_wave2_modules_are_skipped(tmp_path: Path, copy: Path) -> None:
-    for name in ("session.py", "compat.py", "_bridge.py", "_launcher.py", "_runtime32.py", "_doctor.py",
-                 "_legacy.py"):
-        (copy / name).unlink(missing_ok=True)
-    code = "import rumbapy, json\nprint(json.dumps([rumbapy.RumbaClient.__module__, hasattr(rumbapy, 'open')]))"
-    assert last_json(run(code, tmp_path, pythonpath=copy.parent)) == ["rumbapy.client", False]
+@pytest.mark.parametrize("name", ["session.py", "compat.py", "_bridge.py", "_launcher.py", "_runtime32.py",
+                                  "_doctor.py", "_legacy.py"])
+def test_missing_client_module_goes_to_heal(tmp_path: Path, copy: Path, name: str) -> None:
+    # forma literal da A.6: todo módulo do cliente é importado; um arquivo sumido (instalação pela metade) vai ao heal
+    (copy / name).unlink()
+    done = run("import rumbapy", tmp_path, pythonpath=copy.parent)           # DEV=1: heal relança o original
+    assert done.returncode == 1
+    assert "ModuleNotFoundError" in done.stderr or "ImportError" in done.stderr
+    log = (tmp_path / "home" / "logs" / "update.log").read_text(encoding="utf-8")
+    assert "heal: o import do RumbaPy falhou" in log
 
 
 def test_build_id_changed_during_import(tmp_path: Path, copy: Path) -> None:

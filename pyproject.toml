@@ -35,16 +35,9 @@ extend-exclude = ["tools/research", "docs"]
 select = ["E", "F", "W"]
 ignore = ["E501"]
 
-[tool.ruff.lint.per-file-ignores]
-# TODO(P-E): código legado da v0.1.5, substituído por stubs na Onda 2 (B.9.3/B.9.4); some junto com ele.
-"src/rumbapy/api.py" = ["E701", "E722"]
-"src/rumbapy/client.py" = ["E722"]
-"src/rumbapy/server.py" = ["E722", "W291", "W292"]
-
 [tool.pyright]
 pythonVersion = "3.12"
 pythonPlatform = "Windows"
 include = ["src", "_build"]
-# TODO(P-G): remover a exclusão quando o P-E substituir os módulos legados da v0.1.5 (pywin32/pywinauto).
-exclude = ["src/rumbapy/api.py", "src/rumbapy/server.py", "**/__pycache__"]
+exclude = ["**/__pycache__"]
 typeCheckingMode = "basic"

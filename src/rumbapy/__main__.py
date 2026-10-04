@@ -92,22 +92,14 @@ def _cmd_update() -> int:
 def _cmd_doctor(verbose: bool) -> int:
     import rumbapy
 
-    doctor = getattr(rumbapy, "doctor", None)
-    if doctor is None:                    # TODO(P-G): _doctor.py nasce no P-D (Onda 2)
-        _err("RumbaPy: o diagnóstico (doctor) ainda não está disponível nesta versão.")
-        return EXIT_ERROR
-    report = doctor(verbose=verbose)
+    report = rumbapy.doctor(verbose=verbose)
     return EXIT_OK if getattr(report, "ok", True) else EXIT_ERROR
 
 
 def _cmd_close(terminal: str) -> int:
     import rumbapy
 
-    close = getattr(rumbapy, "close", None)
-    if close is None:                     # TODO(P-G): session.close nasce no P-E (Onda 2)
-        _err("RumbaPy: 'close' ainda não está disponível nesta versão; feche as janelas pelo X.")
-        return EXIT_ERROR
-    count = close(terminal)
+    count = rumbapy.close(terminal)
     _out(f"RumbaPy: {count} janela(s) do terminal {terminal.upper()} fechada(s).")
     return EXIT_OK
 

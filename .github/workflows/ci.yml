@@ -35,11 +35,9 @@ jobs:
         run: python -m pip install --disable-pip-version-check ruff pyright
       - name: ruff
         run: ruff check src tests _build --select E,F,W --ignore E501
-      - name: sintaxe compatível com Python 3.12 (bloqueante enquanto o pyright não for)
+      - name: sintaxe compatível com Python 3.12
         run: python -c "import ast, pathlib; [ast.parse(p.read_text(encoding='utf-8'), str(p), feature_version=(3, 12)) for d in ('src', 'tests', '_build') for p in pathlib.Path(d).rglob('*.py')]; print('ok')"
       - name: pyright (pythonVersion 3.12, Windows)
-        # TODO(P-G): tornar bloqueante depois que os módulos da Onda 2 substituírem o código legado da v0.1.5.
-        continue-on-error: true
         run: pyright
 
   test:

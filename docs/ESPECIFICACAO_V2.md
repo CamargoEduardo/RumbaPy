@@ -122,7 +122,7 @@ Removidos: lógica de `api.py` (pywin32/pywinauto/IE COM), `src/rumbapy.egg-info
 3. `errors`, `keys`, `screen`, `waits`, `_codec`, `_types`, `_protocol`, `_buildid`, `_instances`, `_worker/structs`,
    `_worker/mask` não importam `ctypes`. `errors` só importa `screen` sob `if TYPE_CHECKING:`.
 4. Ninguém usa `ctypes.windll`/`ctypes.cdll` (só `ctypes.WinDLL(nome, use_last_error=True)` privado, E22).
-5. Nenhum `print` fora de `__main__`, `_log.notice` e `_bootstrap.say`. Nenhum `pickle`/`.send(`/`.recv(` de `Connection`.
+5. Nenhum `print` fora de `__main__`, `_log.notice`, `_bootstrap.say` e `_doctor.doctor` (A.12 i). Nenhum `pickle`/`.send(`/`.recv(` de `Connection`.
 6. Nenhum módulo importa `pandas`. Compatibilidade de API com 3.12 é garantida por `pyright` (`pythonVersion="3.12"`, E15).
 7. `keys.AIDS` == conjunto de AIDs de `tests/fakes/fake_ehllapi.py` == de `rumbapy._worker.guard` (C10, teste de contrato).
 
@@ -141,7 +141,7 @@ Removidos: lógica de `api.py` (pywin32/pywinauto/IE COM), `src/rumbapy.egg-info
 | Logs | `logs\client-AAAAMMDD.log`, `logs\worker-<tag>-<L>.log` (+`.1`..`.5`), `logs\update.log`, `logs\pip-<AAAAMMDD-HHMMSS>.log`, `logs\boot\worker-<tag>-<L>-<AAAAMMDD-HHMMSS-fff>.txt` (manter 5 por letra) |
 | Estado do update | `update-state.json`, `heal-state.json` |
 | Cache do runtime | `runtime.json` |
-| Letra reservada | `"_"` (worker temporário do `doctor`, nunca conecta) |
+| Letra reservada | `"_"` (worker temporário do `doctor`, nunca conecta; **não usada na v2.0**, A.12 h) |
 
 `atomic_write(path, data: bytes)`: grava `path.tmp-<rand>`, `os.replace` com até 20 tentativas de 50 ms em
 `PermissionError` (R23). `read_json(path) -> dict | None`: ausente/JSON inválido → `None` + WARNING. Pastas criadas sob demanda.
@@ -239,6 +239,59 @@ Não existe papel `worker` nem `RUMBAPY_ROLE` (C6): o worker nunca executa `__in
 * **P-E (`session`, `recipes`, `compat`)**: `send_keys(..., secret=True)` usa `keys._tokenize_extra(s, secret=True)`; corpos com mais de `MAX_CHUNKS` (64) chunks viram vários `send`; o `describe` passado a `wait_until` termina com `oia.describe()` onde a G.4 pede, usa os textos exatos da B.7/G.3 para `NoHostResponse` e o `keyboard` do `wait_ready`, omite o conteúdo da tela com `hidden_unknown`, e passa `hint=` (dica da G.4); espera depois de AID usa `exc=NoHostResponse`. `compat.RumbaClient.update_python_64bit` chama `_update.ensure_latest("legacy", force=True)` e nunca reexecuta. Senha sempre com `secret=True` (receitas).
 * **P-G**: forma literal da A.6 no `__init__` (sem o laço `TODO(P-G)`), `WAVE2` → `REQUIRED` em `test_packaging.py`, pyright bloqueante no CI, job x86 rodando `tests/unit/worker/test_main_e2e.py`, README com o limite da A.9 h; antes do merge no `master`: teste manual do heal (H.6) e job `install-smoke` verde no GitHub Actions.
 
+### A.10 Ajustes de contrato do P-C (Onda 2: janelas, launcher e legado; prevalecem)
+
+| # | Seção | Contrato em vigor |
+|---|---|---|
+| a | E.5, E.6 | `Launcher.open/attach` devolvem `Opened(backend, info, profile, screen)` (dono já com `bind_instance` + a 1ª tela estável); `open_terminal/attach_terminal` (métodos e funções de módulo) devolvem `(Backend, OpenInfo)`. |
+| b | D.8, J.3 | `Launcher(user32, get_backend, spawn=None, *, clock, sleep, find_worker, find_launcher, run_script, neutralize, legacy_busy_extra, process_alive, process_created, hllapi_client_pids)`. `get_backend` aceita `(letra, modo)` ou `(modo)` já ligado à letra (decidido por `inspect.signature`). |
+| c | E.5 | Passos 7 e 8 trocados: `bind_instance(hwnd)` logo depois do `connect`, antes do 1º `snapshot` (A.9 i). |
+| d | E.5 (2, 6), E.6 | `SessionReplaced` no `connect` do dono (o handle em cache é o de uma `Session` anterior do mesmo processo, já despejada pelo `evict` do passo 3, ex.: célula `open('D')` rodada de novo): `release()` dele, novo `get_backend(L, "owner")` e outra tentativa, **uma vez**; um 2º `SessionReplaced` propaga (com a limpeza do passo 10). |
+| e | E.5 (2) | `reuse`: o fallback (notice, fechar e abrir) só vale para falha de **conexão** (`get_backend`/`connect` com `TerminalError`/`HllapiError`, rc 1 por 10 s, ou HLLAPI em outra janela). Conectado, a 1ª tela tem o prazo `D` e o `LaunchTimeout` dela propaga **sem fechar** a janela reaproveitada. |
+| f | E.5 (4, 10), E.7 | Falha do fallback IE no passo 4 também roda a limpeza do passo 10: `cscript` sem terminar → `LaunchTimeout` (fase "a letra não foi registrada", `details["via"] == "ie"`); `ok:false` → `LaunchFailed` com a mensagem `"O Internet Explorer não abriu o {perfil} ({step}: {error})."` (sanitizada; ainda fora dos templates de `errors.LaunchFailed` — pendência do dono do `errors.py`: variante `ie`). |
+| g | E.5, C.6 | Toda falha de `open`/`attach` devolve o lease de dono (`release`). `open`/`attach`, e `close_all` quando ele mesmo abriu a conexão admin, dão `release()` nela ao terminar (o worker aceita no máximo `MAX_CONNECTIONS`); a admin passada pelo chamador, ou o mesmo objeto do dono, não é devolvida. |
+| h | E.3 | Regra `launched`: só janelas **visíveis**, de imagem `launcher`/`iexplore`; entrada de `launched-*.json` sem `created` inteiro é ignorada, e `record_launch` não grava se `process_created` falhar. "Instância de outro perfil" (R6b) = qualquer título `<NOME> - Pro Client[ ...]` do launcher ou o padrão `ie` com outro nome (perfis do portal fora de `PROFILES` também contam). |
+| i | E.3 | `hllapi`: `iexplore` filho de `msedge` continua de fora (I18). `Instance.title` e `Dialog.title/texts` têm `repr=False` (use `safe_title`/`sanitize`). |
+| j | E.4 (6, 7), E.5 (5) | `InstanceNotClosable` sem `hwnd`/`hwnd_pid` no registro do worker: o PID sai de `_win32.hllapi_client_pids()` (só leitura), preferindo Edge > IE > launcher (nunca o worker nem o próprio processo). `ClientTableFull` também quando um `HLLAPI ERROR` aparece durante o registro (passo 5) ou num sobrevivente do `close`. |
+| k | E.8 | Com `RUMBAPY_SANDBOX=1` e as portas padrão, a neutralização é pulada (WARNING). Repetição do passo 4: lê **todos** os PIDs ouvintes da porta (`GetExtendedTcpTable`); se algum for de outra sessão do Windows, nada é tocado; com 1 ouvinte, uma rodada; com 2+, até 3 rodadas de `ping`/`disconnect` (idempotente) enquanto um não-shim responder. |
+| l | E.2 | `RealUser32` lê textos com `InternalGetWindowText` (não `GetWindowTextW`, que manda `WM_GETTEXT` e trava em janela pendurada). |
+
+### A.11 Ajustes de contrato do P-E (Onda 2: API, receitas e compatibilidade; prevalecem)
+
+| # | Seção | Contrato em vigor |
+|---|---|---|
+| a | B.3, J.3 | Injeção: `session._set_factories(backend_factory=..., user32_factory=..., launcher_factory=...)` (`None` volta ao padrão). `backend_factory(profile, python32)` devolve `get_backend(letra, modo) -> Backend` (`modo` = `"owner"`/`"admin"`; padrão `_launcher._default_get_backend`); `user32_factory()` devolve o `User32`; `launcher_factory(user32, get_backend)` devolve o orquestrador (padrão `_launcher.Launcher`, A.10 b) com `open/attach` (→ `Opened`), `close_all` (→ nº fechadas) e `window_info`. |
+| b | B.3 | `reconnect()`: com hwnd conhecido e `WD_GetSessionHWND = 0` na reconexão levanta `NotConnected` (`function="WD_GetSessionHWND"`, `details["motivo"]`), sem religar ao hwnd antigo; hwnd diferente → `replaced` + `SessionReplaced`. |
+| c | B.3 | Em `replaced`, `close()` também levanta `SessionReplaced` (não fecha a instância NOVA, que pode ser de outra `Session` ou de outro script); `__exit__` com `close_on_exit` pula o `close()` (log INFO). Para fechar de propósito: `rumbapy.close(L)`. |
+| d | G.5 | `wait_any`: valor `Callable[[Screen], Any]` satisfaz pela **verdade** do resultado (`""`, `0`, `[]`, `None` não satisfazem). Mensagem do timeout: `Esperei {s} s por uma destas opções: {opção}; {opção}. Linha 1 atual: '{linha1}'.` + OIA, com cada opção em `'{chave}' = '{texto}' em qualquer lugar (não encontrado)`, `'{chave}' = '{texto}' em ({r},{c}), ali está '{atual}'` ou `'{chave}' = condição própria (não satisfeita)`. |
+| e | B.9.1 | `connected` é property: `True` só depois de `logon_*`/`connect` (ou anexo automático) **bem-sucedido** e enquanto a `Session` estiver conectada (`ok`/`uncertain`); falha de logon, `disconnect`, `close_terminal`, `replaced`/`closed` → `False`. |
+| f | B.9.1 | `disconnect()` sem sessão não faz nada (sem anexo automático). `connect()` com a sessão `closed`/`replaced` faz novo `attach(L, timeout=60)`. `close_terminal()` com a sessão `replaced`/`closed` (ou sem sessão) chama `rumbapy.close(L)` (semântica da v0.1.5) e, se `replaced`, descarta a sessão (a próxima op anexa de novo). |
+| g | B.9.1 | `python32bit_path` falso (`""`, `None`) = descoberta automática (como a v0.1.5). `copy_string_to_ps(y, x, "")` não faz nada e devolve `True` (v0.1.5 ignorava o rc; célula vazia não interrompe o lote). |
+| h | B.7 | Pendência do dono do `errors.py`: `read` que termina com o host ocupado levanta `HostBusy` com o único texto de B.7 ("parte das teclas pode ter sido digitada"), enganoso numa leitura; falta uma variante `read` (ex.: "O host continua ocupado (X SYSTEM); a leitura não foi possível em {s} s."). |
+
+### A.12 Ajustes de contrato do P-D (Onda 2: ponte, runtime 32-bit e doctor; prevalecem)
+
+| # | Seção | Contrato em vigor |
+|---|---|---|
+| a | D.1 | `--dll` só vai na linha de comando **sem** `--fake-dll` (no modo dublê a DLL real nem é citada; o worker usa `DLL_PATH` como padrão). `RUMBAPY_LOG_LEVEL` (`DEBUG`/`INFO`/`WARNING`/`ERROR`; outro valor → WARNING e `INFO`) define o `--log-level` do worker (diagnóstico). |
+| b | C.5, C.8 | Falhas de disco do cliente nunca são "transporte": `OSError` ao ler/criar `authkey.bin` → `WorkerError` ("Não consegui ler/criar authkey.bin (…)"); `OSError` de `_buildid.compute` (handshake passo 4, R11b, `BUILD_ID`) → `WorkerError` ("Não consegui ler os arquivos do pacote rumbapy para conferir a versão (…)"). Só `send/recv` do canal e o `connect` do pipe contam como transporte ("gone"). |
+| c | D.1, D.8 | `spawn`: `OSError` do `Popen` → `WorkerStartFailed`; `OSError` ao criar as pastas/arquivo de boot → `WorkerError` ("pasta de dados"); falha de `prune_boot_logs` só gera WARNING. |
+| d | D.8 | A trava `spawn-<tag>-<L>` **não** é solta nas esperas (soltá-la no boot deixaria outro cliente subir um 2º worker da letra). Quem espera a trava espera em rodadas de 30 s até `SPAWN_LOCK_MAX_S` = 20 s × (2 + 3) + 10 s × (3 + 1) + 10 s = 150 s (o pior caso de quem segura); estourou → `WorkerError` "Outro processo está iniciando … há mais de 150 s". |
+| e | D.2, D.4, B.7 | Saída 3 no boot usa o `exit_reason` do registro (mesmo `pipe`) como a tabela da D.2; sem motivo → `WorkerStartFailed`. `WorkerHung` montado pelo cliente a partir do `exit_reason`: `hung_function`/`hung_limit` do registro, se houver; senão `stop_while_hung` = "o encerramento (WD_DisconnectPS/WD_ResetSystem)" em 5 s, op `connect` = `WD_ConnectPS` em 15 s, demais = "uma chamada da DLL" em 20 s. |
+| f | B.7, D.8 | `WorkerStartFailed` que não vem de código de saída (desistência, `Popen` falhou, não ficou pronto em 20 s) usa "O processo auxiliar 32-bit do terminal {L} não iniciou: {motivo}" (sem "código {n}"). Pendência do dono do `errors.py`: variantes `too_many`, `popen_failed`, `not_ready`. |
+| g | D.8, C.7 | Pipe mudo com o lease do **próprio** processo no registro: não sinaliza a parada (o worker a adiaria); espera 1 s e tenta 1×; depois `WorkerError` "… o lease é deste mesmo processo …; não vou pará-lo." (dica: fechar as `Session`). `Bridge.find_handle` (E.4 passo 1) nunca sobe worker. |
+| h | A.5, M.4 I11 | O `doctor` não usa worker temporário: lê os registros de D/Z/A e faz `ping` por conexão admin só nos vivos (`Bridge.probe`, sem spawn e sem criar a chave). A letra reservada `_` não é usada na v2.0. |
+| i | A.4.5, B.2 | `doctor()` (função pública cujo contrato é imprimir, B.2) escreve em `sys.stdout` e está na lista de exceções do "nenhum print". |
+| j | I.1 | Depois de estourar o prazo da sonda, a coleta da saída também tem prazo (1 s); nunca há espera sem prazo (neto de redirecionador de venv com o stdout herdado). |
+
+### A.13 Fechamento da Onda 2 (orquestrador; prevalece)
+
+| # | Seção | Contrato em vigor |
+|---|---|---|
+| a | A.6 | `__init__.py` na forma literal da A.6 (o laço transitório `TODO(P-G)` saiu): todo módulo do cliente é importado; arquivo ausente ou quebrado vai ao `heal`. |
+| b | D.9, E.8 | `_win32.tcp_listener_pids(port) -> list[int]` (todos os ouvintes de `127.0.0.1`/`0.0.0.0`, sem repetição, só leitura); `tcp_listener_pid` = o 1º deles. O `_legacy` usa a função pública (o parser duplicado saiu). |
+| c | J.1 | pyright (`basic`, 3.12, Windows) **bloqueante** no CI sobre `src` e `_build` (sem exclusões); avisos de `__all__` dinâmico tolerados. `python -m rumbapy doctor/close` chamam `rumbapy.doctor`/`rumbapy.close` direto. |
+
 ---
 
 ## B. API pública
@@ -284,8 +337,9 @@ Perfis fixos (`profiles.PROFILES`): `D → BRAZIL_D (cics)`, `Z → BRAZIL_Z (ci
 class Session:
     def __init__(self, backend: Backend, profile: Profile, info: OpenInfo, *,
                  timeout: float = 30.0, user32: User32 | None = None, close_on_exit: bool = False) -> None
-    # injeção (I2): open/attach usam session._backend_factory(profile, python32) e session._user32_factory();
-    # testes trocam por session._set_factories(backend_factory=..., user32_factory=...).
+    # injeção (I2; A.11 a): open/attach/close usam session._backend_factory(profile, python32) -> get_backend(L, modo),
+    # session._user32_factory() e session._launcher_factory(user32, get_backend); testes trocam por
+    # session._set_factories(backend_factory=..., user32_factory=..., launcher_factory=...).
 
     terminal: str; profile: Profile; info: OpenInfo; rows: int; cols: int
     timeout: float                                   # padrão das esperas (RUMBAPY_TIMEOUT ou 30 s), mutável
@@ -336,7 +390,7 @@ class Session:
     def release(self) -> None                       # devolve o lease; HLLAPI continua conectado no worker
     def disconnect(self) -> None                    # WD_DisconnectPS + release
     def reconnect(self, timeout: float = 10.0) -> Session
-    def close(self) -> None                         # = rumbapy.close(letra); state="closed"
+    def close(self) -> None                         # = rumbapy.close(letra); state="closed" (em replaced: SessionReplaced, A.11 c)
     def __enter__(self) -> Session
     def __exit__(self, *exc) -> None                # release(); se close_on_exit: close(). Nunca mascara exceção.
     def __repr__(self) -> str                       # <Session D BRAZIL_D 24x80 ok worker=1234> (sem conteúdo de tela)
@@ -605,9 +659,13 @@ começa com o texto legado: `SENHA DO CICS ESTÁ EXPIRADA` / `SENHA DO CICS EST�
 | `copy_string_to_ps(y, x, text)` | `write` | `True` | `ProtectedField`/`Truncated` levantam antes de escrever |
 | `copy_field(y, x)` | `read_field`; tira só os NUL finais (`nul_tail`) | `str` | tamanho real do campo (antes ≤ 80) |
 | `screen_load(y, x, text, text_diff=False)` | `wait_text(text, y, x, timeout=120, gone=text_diff)` com `error_checks` do perfil | `True` | polling 50–100 ms; erro grave só em CICS |
-| `close_terminal()` | `rumbapy.close(L)` | `True` | fecha só janelas RUMBA do perfil, de qualquer script |
-| `disconnect()` | `Session.disconnect()` | `True` | — |
-| `connect()` | sem Session: `rumbapy.attach(L, timeout=60)`; senão `reconnect()` | `True` | sem terminal → `TerminalNotOpen` (antes: `True` falso) |
+| `close_terminal()` | `rumbapy.close(L)` (também com a sessão `replaced`, que é descartada; A.11 f) | `True` | fecha só janelas RUMBA do perfil, de qualquer script |
+| `disconnect()` | `Session.disconnect()`; sem sessão: nada | `True` | — |
+| `connect()` | sem Session (ou `closed`/`replaced`): `rumbapy.attach(L, timeout=60)`; senão `reconnect()` | `True` | sem terminal → `TerminalNotOpen` (antes: `True` falso) |
+
+Detalhes (A.11 e–g): `connected` só vira `True` depois do sucesso de `logon_*`/`connect`/anexo automático e acompanha
+`Session.connected`; `python32bit_path` falso (`""`) = descoberta automática; `copy_string_to_ps(y, x, "")` não faz
+nada e devolve `True`.
 
 Uso preguiçoso: qualquer op sem `logon_*`/`connect` faz `attach(L, timeout=10)` automaticamente.
 
@@ -1036,7 +1094,7 @@ mensagens do worker começam com `L=<letra>`. Ex.: `2026-10-03 14:05:12.345 INFO
 
 ```
 handle em cache vivo (mode=owner) → devolve
-com file_lock("spawn-<tag>-<L>", timeout=30 s, fatias de 0,1 s):          # esperas > 10 s soltam o lock e o readquirem
+com file_lock("spawn-<tag>-<L>", timeout=30 s, fatias de 0,1 s):          # não solta nas esperas; quem espera: rodadas de 30 s até 150 s (A.12 d)
   spawns = 0 (máx. 2; +3 só para saída 15); stops = 0 (máx. 1)
   repetir:
     reg = read_json(registro)
@@ -1197,7 +1255,7 @@ estar vazio (rc 4) (R16, C18). `D = t_inicio + T`.
    + "o RUMBA ainda está tentando conectar — verifique VPN/rede" se o diálogo Connecting estiver visível; limpeza.
 7. Primeira tela (até D): snapshot com busy=false, texto não totalmente em branco, oia.online e oia.ready, igual ao snapshot
    anterior tirado ≥ 0,3 s antes → ok; estourou → LaunchTimeout(fase "primeira tela"). Nada é digitado.
-8. backend.bind_instance(hwnd); Session criada com OpenInfo.
+8. backend.bind_instance(hwnd) (na prática logo depois do connect, antes do passo 7: A.10 c); Session criada com OpenInfo.
 9. Aplica window ("normal" → nada; "minimized" → SW_SHOWMINNOACTIVE) e devolve.
 10. Limpeza (toda falha depois do passo 4): close_all restrito às instâncias novas (instâncias − antes) ∪ hwnd HLLAPI ∪
     PIDs lançados por nós. Nunca TerminateProcess.
@@ -1410,7 +1468,8 @@ Mensagens (citam no máximo `len(esperado)` caracteres da posição ou a linha 1
 ### G.5 `wait_any`, `wait_change`, `wait_cursor`
 
 * `wait_any(options)`: testa **na ordem do dicionário**; valor `str` = em qualquer lugar; `re.Pattern` = `search` na tela;
-  `(texto, row, col)` = posição fixa; `Callable[[Screen], bool]`. `match` = chave. Timeout lista cada opção e o que havia.
+  `(texto, row, col)` = posição fixa; `Callable[[Screen], bool]` (vale a verdade do resultado). `match` = chave. Timeout
+  lista cada opção e o que havia (formato em A.11 d).
 * `wait_change(since=None)`: `s.text != base.text or s.cursor != base.cursor` (`base = since` ou o 1º snapshot).
 * `wait_cursor(row, col)`: `s.cursor == (row, col)`.
 * `error_checks` rodam em `wait_text/wait_any/wait_change/wait_cursor` e na espera pós-AID — **não** em `wait_ready`.
@@ -1661,7 +1720,7 @@ rede sem `RUMBAPY_TEST_GITHUB`. Testes-sentinela: cada recusa acima é exercitad
   (via `make_cics_login_host` quando couber).
 * `tests/fakes/fake_backend.py` (P-B): `InProcessBackend(fake: FakeEhllapi, letter)` = `Dispatcher(Engine(Hllapi(fake)))`
   no próprio processo, com `json.dumps/loads` em cada mensagem.
-* Pontos de injeção: `session._set_factories(backend_factory, user32_factory)`;
+* Pontos de injeção: `session._set_factories(backend_factory, user32_factory, launcher_factory)` (A.11 a);
   `_launcher.Launcher(user32, get_backend, spawn, clock=time.monotonic, sleep=time.sleep)` (`spawn(argv) -> ProcessLike`
   com `.pid`, `.poll()`); `Watchdog(exit_fn=os._exit, clock=…)`; `waits.wait_until(clock=…, sleep=…)`.
 
