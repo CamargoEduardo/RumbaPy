@@ -347,6 +347,10 @@ def l9(rumbapy: Any, report: dict[str, Any], py32: str) -> None:
     report["d"] = d.info.to_wire()
     report["same_launcher_process"] = z.info.hwnd_pid == d.info.hwnd_pid
     report["z_windows"], report["d_windows"] = window(z), window(d)
+    try:                                                   # a abertura do D derruba a conexão do Z?
+        report["z_read_after_open_d"] = z.read(1, 1, 20)
+    except rumbapy.RumbaError as exc:
+        report["z_read_after_open_d"] = exc_info(exc)
     timed(report, "close_d", d.close)
     try:
         report["z_read_after_close_d"] = z.read(1, 1, 20)
