@@ -56,7 +56,7 @@ _DEFAULT_DELIVERY: Mapping[tuple[str, int], str] = MappingProxyType({
 def classify(func: str, rc: int) -> Outcome:
     """``"ok"`` (sucesso), ``"tolerated"`` (o chamador interpreta) ou ``"error"`` (``check`` levanta)."""
     success, tolerated, _errors = TABLE[func]
-    if success == ANY or rc in success:
+    if isinstance(success, str) or rc in success:     # ANY: qualquer rc é sucesso
         return "ok"
     return "tolerated" if rc in tolerated else "error"
 

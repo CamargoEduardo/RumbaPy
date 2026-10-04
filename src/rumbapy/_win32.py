@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from ctypes import wintypes
+from typing import Any
 
 from .errors import SandboxViolation
 
@@ -59,7 +60,7 @@ _user32 = ctypes.WinDLL("user32", use_last_error=True)
 _iphlpapi = ctypes.WinDLL("iphlpapi", use_last_error=True)
 
 
-def _bind(dll: ctypes.WinDLL, name: str, restype: object, *argtypes: object) -> Callable[..., object]:
+def _bind(dll: ctypes.WinDLL, name: str, restype: object, *argtypes: object) -> Callable[..., Any]:
     fn = getattr(dll, name)
     fn.restype = restype
     fn.argtypes = list(argtypes)
@@ -158,7 +159,7 @@ def _error(what: str) -> OSError:
     return exc
 
 
-def _h(value: object) -> int:
+def _h(value: Any) -> int:
     """Handle devolvido pelo ctypes (``None``/int) -> int (0 = inválido)."""
     return int(value or 0)
 
@@ -469,7 +470,7 @@ def top_level_windows() -> list[int]:
     """HWNDs de todas as janelas de nível superior (``EnumWindows``)."""
     found: list[int] = []
 
-    def collect(hwnd: object, _lparam: object) -> bool:
+    def collect(hwnd: Any, _lparam: Any) -> bool:
         found.append(int(hwnd or 0))
         return True
 

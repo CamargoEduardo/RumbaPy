@@ -14,8 +14,8 @@ no texto linear (um trecho pode continuar na linha seguinte, como no 3270).
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
+from typing import Any, NamedTuple, TypeGuard, cast
 from collections.abc import Mapping
-from typing import Any, NamedTuple
 
 from .errors import InvalidPosition, ParameterError, ProtocolError
 from . import _codec
@@ -159,7 +159,7 @@ def _bad(detail: str, terminal: str) -> ProtocolError:
     return ProtocolError.make(L=terminal or "?", detalhe=detail, terminal=terminal or None)
 
 
-def _int(value: Any) -> bool:
+def _int(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
@@ -217,6 +217,7 @@ class Screen:
             cols = len(text) // rows
         if not (_int(rows) and _int(cols) and rows > 0 and cols > 0 and rows * cols == len(text)):
             raise _bad(f"geometria {rows}x{cols} não confere com {len(text)} caracteres", terminal)
+        rows, cols = cast(int, rows), cast(int, cols)          # validados acima (o pyright não estreita o "not")
         size = rows * cols
         cursor = _position(d.get("cursor"), rows, cols, terminal, "cursor")
         oia_hex = d.get("oia")
@@ -244,6 +245,7 @@ class Screen:
                 length, attr = item.get("length"), item.get("attr")
                 if not (_int(length) and length >= 0 and _int(attr) and 0 <= attr <= 0xFF):
                     raise _bad("campo inválido no snapshot", terminal)
+                length, attr = cast(int, length), cast(int, attr)
                 first = (start.row - 1) * cols + start.col          # posição linear 1-based
                 span = [(first - 1 + k) % size for k in range(min(length, size))]
                 specs.append((start, length, attr, span))

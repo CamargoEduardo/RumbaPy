@@ -7,7 +7,7 @@ chaves extras são ignoradas). O ``text`` lido da tela nunca aparece no ``repr()
 # ruff: noqa: I001
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self, TypeGuard, cast
 from dataclasses import dataclass, field, fields
 from collections.abc import Mapping
 
@@ -27,7 +27,7 @@ def _bad(detail: str) -> ProtocolError:
     return ProtocolError.make(L="?", detalhe=detail)
 
 
-def _is_int(value: Any) -> bool:
+def _is_int(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
@@ -46,7 +46,7 @@ def _get(d: Mapping[str, Any], cls: type, key: str, kinds: tuple[type, ...], *, 
              isinstance(value, kind) for kind in kinds)
     if not ok:
         raise _bad(f"{cls.__name__}.{key} com tipo inválido ({type(value).__name__})")
-    return float(value) if kinds == (float,) else value
+    return float(cast(float, value)) if kinds == (float,) else value
 
 
 def _require_mapping(d: Any, cls: type) -> Mapping[str, Any]:

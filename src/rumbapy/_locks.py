@@ -55,6 +55,7 @@ class FileLock:
         return self._fd is not None
 
     def _try_once(self, fd: int) -> bool:
+        assert msvcrt is not None              # acquire() já recusou a plataforma sem msvcrt
         os.lseek(fd, 0, os.SEEK_SET)
         try:
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
@@ -95,6 +96,7 @@ class FileLock:
             fd, self._fd = self._fd, None
         if fd is None:
             return
+        assert msvcrt is not None              # só há fd depois de um acquire() bem-sucedido
         try:
             os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)

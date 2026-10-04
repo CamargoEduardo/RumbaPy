@@ -201,7 +201,7 @@ class Watchdog:
         letter = self.host.letter if self.host is not None else "?"
         job = inflight.job if inflight is not None else None
         op = getattr(job, "op", None)
-        input_op = op in _protocol.OPS and not _protocol.OPS[op].idempotent
+        input_op = isinstance(op, str) and op in _protocol.OPS and not _protocol.OPS[op].idempotent
         delivery = "unknown" if input_op else None
         try:
             table_full = bool(self.dialog_visible(os.getpid()))

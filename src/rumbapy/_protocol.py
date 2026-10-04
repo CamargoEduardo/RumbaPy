@@ -15,10 +15,10 @@ Mensagens (só ``send_bytes``/``recv_bytes``; JSON UTF-8 compacto; pickle proibi
 # ruff: noqa: I001
 from __future__ import annotations
 
+from typing import Any, Literal, TypeGuard, cast
 from collections.abc import Mapping
 from types import MappingProxyType
 from dataclasses import dataclass
-from typing import Any, Literal
 
 from .errors import ParameterError, ProtocolError, RumbaError, UndefinedKey, from_wire, to_wire
 from ._version import PROTOCOL as PROTOCOL, __version__
@@ -194,7 +194,7 @@ class Request:
 _ENVELOPE_KEYS = frozenset({"id", "op", "args", "hwnd"})
 
 
-def _is_int(value: Any) -> bool:
+def _is_int(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
@@ -344,7 +344,7 @@ def validate_request(msg: Any, *, mode: str | None = None, letter: str | None = 
         allowed = ADMIN_OPS if mode == "admin" else OWNER_OPS
         if op not in allowed:
             raise _param(f"a operação {op!r} não é permitida numa conexão {mode}")
-    return Request(rid, op, validate_args(op, args, rows=rows, cols=cols), hwnd)
+    return Request(cast(int, rid), op, validate_args(op, args, rows=rows, cols=cols), hwnd)
 
 
 # ------------------------------------------------------------------------------------------- mensagens
