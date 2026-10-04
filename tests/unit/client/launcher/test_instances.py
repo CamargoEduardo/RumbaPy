@@ -122,6 +122,28 @@ def test_launched_rule_only_counts_visible_windows_of_launched_pids() -> None:
     assert [(i.hwnd, i.kind) for i in found] == [(visible.hwnd, "launched")]
 
 
+def test_launched_pid_with_main_window_does_not_add_helper_windows() -> None:
+    # ao vivo (2026-10-04): o launcher tem "Internet Explorer_Hidden" com WS_VISIBLE e sem título; WM_CLOSE nela
+    # atrapalhou o encerramento e a DLL travou no QuerySessions seguinte
+    u = _world()
+    main = u.add_window("BRAZIL_D - Pro Client", pid=100, cls="WindowsForms10.Window.8.app.0.141b42a_r7_ad1")
+    u.add_window("", pid=100, cls="Internet Explorer_Hidden")
+    u.add_dialog("Aviso", pid=100, texts=["algo"])                   # diálogo sem dono: tratado como diálogo
+    found = find_instances(u, D, launched_pids=[100])
+    assert [(i.hwnd, i.kind) for i in found] == [(main.hwnd, "launcher")]
+
+
+@pytest.mark.parametrize("cls", ["Internet Explorer_Hidden", "GDI+ Hook Window Class", "IME", "MSCTFIME UI",
+                                 "SocketNotifyWindow", "Telnet3270 Application",
+                                 ".NET-BroadcastEventWindow.4.0.0.0.141b42a.0", "AlgumaClasse"])
+def test_launched_rule_ignores_helper_windows(cls: str) -> None:
+    u = _world()
+    stuck = u.add_window("Host Access Web Launcher", pid=100, cls="WindowsForms10.Window.8.app.0.2")
+    u.add_window("" if cls == "AlgumaClasse" else "x", pid=100, cls=cls)   # sem título fora das classes principais
+    found = find_instances(u, D, launched_pids=[100])
+    assert [(i.hwnd, i.kind) for i in found] == [(stuck.hwnd, "launched")]
+
+
 def test_launched_pid_with_instance_of_another_profile_is_left_alone() -> None:
     u = _world()
     u.add_window("BRAZIL_Z - Pro Client", pid=100)

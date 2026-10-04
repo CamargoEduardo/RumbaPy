@@ -148,6 +148,7 @@ class World:
     """Tudo o que o ``Launcher`` enxerga, em memória."""
 
     close_delay: float = 0.5
+    exit_delay: float | None = None        # s depois da última janela principal: o processo sai (None = nunca)
     clock: Clock = field(default_factory=Clock)
     timeline: list[tuple] = field(default_factory=list)
     spawned: list[list[str]] = field(default_factory=list)
@@ -167,6 +168,7 @@ class World:
     def __post_init__(self) -> None:
         self.user32 = TimelineUser32(self.timeline, clock=self.clock, close_delay=self.close_delay)
         self.user32.on_destroy.append(self._unregister)
+        self.user32.on_destroy.append(self._maybe_exit)
         self.fake = ClockedEhllapi(self.clock)
         # um só "worker": admin e dono dividem o Engine (a conexão HLLAPI é por processo) e o evict despeja o dono
         admin = InProcessBackend(self.fake, "D", mode="admin", lease=True)
@@ -244,6 +246,21 @@ class World:
             if owner_hwnd == hwnd:
                 del self.session_hwnd[letter]
                 self.fake.remove_session(letter)
+
+    def _maybe_exit(self, hwnd: int) -> None:
+        """Como o Web Launcher real: fechada a última janela visível do processo, ele sai ``exit_delay`` s depois."""
+        win = self.user32.windows.get(hwnd)
+        if self.exit_delay is None or win is None or win.pid not in self.alive:
+            return
+        pid = win.pid
+        if any(w.alive and w.pid == pid and w.parent == 0 and w.visible for w in self.user32.windows.values()):
+            return
+
+        def leave() -> None:
+            self.alive.pop(pid, None)
+            self.timeline.append(("exit", pid))
+
+        self.clock.at(self.exit_delay, leave)
 
     def registered(self) -> list[str]:
         return sorted(self.fake.sessions)

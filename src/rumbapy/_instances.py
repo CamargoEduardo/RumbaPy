@@ -36,6 +36,12 @@ LAUNCHER_CLASS_PREFIX = "WindowsForms10."
 IE_CLASS = "IEFrame"
 DIALOG_CLASS = "#32770"
 RUMBA_IMAGES = frozenset({LAUNCHER_IMAGE, IE_IMAGE})
+# Janelas auxiliares dos processos do RUMBA que nunca são instância (ao vivo, 2026-10-04: o launcher tem uma
+# "Internet Explorer_Hidden" com WS_VISIBLE e sem título, além das ocultas do .NET/GDI+/IME/Telnet3270). WM_CLOSE nelas
+# não fecha o terminal e atrapalha o encerramento do emulador (a DLL travou no QuerySessions logo depois).
+HELPER_CLASSES = frozenset({"Internet Explorer_Hidden", "GDI+ Hook Window Class", "IME", "MSCTFIME UI",
+                            "SocketNotifyWindow", "Telnet3270 Application"})
+HELPER_CLASS_PREFIXES = (".NET-BroadcastEventWindow",)
 
 DialogKind = Literal["connecting", "short_name", "hllapi_error", "other"]
 Kind = Literal["launcher", "ie", "hllapi", "launched"]
@@ -83,6 +89,13 @@ def classify(win: RawWindow, profile_name: str, image: str | None, parent_image:
         if _ie_title_re(profile_name).fullmatch(title):
             return "ie"
     return None
+
+
+def is_helper_window(win: RawWindow) -> bool:
+    """Janela auxiliar (MSHTML/.NET/GDI+/IME/Telnet3270) ou sem título fora das classes de janela principal."""
+    if win.cls in HELPER_CLASSES or win.cls.startswith(HELPER_CLASS_PREFIXES):
+        return True
+    return not win.title and win.cls != DIALOG_CLASS and not win.cls.startswith((LAUNCHER_CLASS_PREFIX, IE_CLASS))
 
 
 def dialog_kind(title: str, texts: Iterable[str]) -> DialogKind:
@@ -222,8 +235,13 @@ def find_instances(user32: User32, profile: Profile, *, hllapi_hwnds: Iterable[i
     if pids:
         others = snap.other_profile_pids(name)
         instance_hwnds = set(found)
+        # um PID lançado que já tem a janela principal achada (launcher/ie/hllapi) não contribui com mais janelas: o
+        # WM_CLOSE na principal encerra o processo; os diálogos dele são tratados como diálogos (E.4 passo 5)
+        instance_pids = {inst.pid for inst in found.values()}
         for win in snap.windows:
             if win.pid not in pids or win.pid in others or win.hwnd in found or not win.visible:
+                continue
+            if win.pid in instance_pids or is_helper_window(win):
                 continue
             if snap.image(win.pid) not in RUMBA_IMAGES:
                 continue                          # PID reaproveitado por outro programa: nunca é instância

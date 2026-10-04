@@ -55,6 +55,7 @@ BLANK_STABLE_S = 1.0                                  # attach/reuse: tela em br
 CLOSE_CHECKS = (3.0, 8.0)                             # diálogos e novo WM_CLOSE nos sobreviventes
 REGISTER_MAX_S = 45.0
 NOT_CLOSABLE_GRACE = 1.0                              # sem nenhuma janela fechada: quanto esperar o desregistro
+PROCESS_EXIT_S = 5.0                                  # depois das janelas: espera a saída dos processos (sem DLL)
 SYSTEM_ERRORS_MAX = 3
 LAUNCHED_KEEP = 5
 IE_TIMEOUT_MAX = 60
@@ -423,6 +424,7 @@ class Launcher:
         for inst in found:                           # 3. oculta -> minimizada sem ativar (C24)
             if not inst.visible:
                 self.user32.show(inst.hwnd, SW_SHOWMINNOACTIVE)
+        exiting = self._exiting_processes(profile, found)
         for inst in found:                           # 4.
             logger.info("close %s: WM_CLOSE em hwnd=%d pid=%d (%s) '%s'", letter, inst.hwnd, inst.pid, inst.kind,
                         inst.safe_title)
@@ -451,9 +453,36 @@ class Launcher:
             listing = ", ".join(f"'{inst.safe_title}' (PID {inst.pid})" for inst in survivors)
             raise CloseFailed.make(n=len(survivors), perfil=name, lista=listing, terminal=letter)
         if verify:                                   # 6.
+            self._wait_processes_exit(letter, exiting, min(deadline, self.clock() + PROCESS_EXIT_S))
             until = deadline if found else min(deadline, self.clock() + NOT_CLOSABLE_GRACE)
             self._verify_unregistered(profile, adm, until, reg)
         return closed                                # 8.
+
+    def _exiting_processes(self, profile: Profile, found: list[Instance]) -> dict[int, int | None]:
+        """PIDs (com ``created``) que devem sair depois do WM_CLOSE: os das instâncias, menos os que hospedam janela
+        de OUTRO perfil (não vão sair) e o próprio processo. Lido ANTES do WM_CLOSE (PID reaproveitado = outro)."""
+        if not found:
+            return {}
+        others = Snapshot(self.user32).other_profile_pids(profile.name)
+        out: dict[int, int | None] = {}
+        for inst in found:
+            if inst.pid and inst.pid not in others and inst.pid != os.getpid() and inst.pid not in out:
+                out[inst.pid] = self.process_created(inst.pid)
+        return out
+
+    def _wait_processes_exit(self, letter: str, exiting: dict[int, int | None], until: float) -> None:
+        """Passo 5b (ao vivo, 2026-10-04): ``WD_QuerySessions`` chamado enquanto o emulador encerra pode travar
+        dentro da DLL (watchdog de 20 s + reciclagem do worker). Antes da conferência do passo 6, espera SEM chamar
+        a DLL que os processos das instâncias fechadas saiam (ao vivo: 0,3 s depois do WM_CLOSE na janela principal)."""
+        pending = dict(exiting)
+        while pending:
+            pending = {pid: created for pid, created in pending.items() if self.process_alive(pid, created)}
+            if not pending or self.clock() >= until:
+                break
+            self.sleep(CLOSE_POLL)
+        if pending:
+            logger.info("close %s: processo(s) %s ainda saindo após o WM_CLOSE; conferindo o desregistro assim mesmo",
+                        letter, sorted(pending))
 
     def _nudge(self, profile: Profile, survivors: list[Instance]) -> bool:
         """Aos 3 s e 8 s: trata os diálogos de cada sobrevivente (tabela E.3) e manda outro WM_CLOSE."""

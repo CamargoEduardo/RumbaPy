@@ -274,3 +274,39 @@ def test_world_evict_revokes_the_owner_like_the_real_worker(world: World) -> Non
     world.owner.release()                                     # devolve o handle despejado: o próximo é novo
     assert world.owner.connect().connected
     assert world.admin.evict("close")["evicted_owner"] is not None
+
+
+def test_sessions_is_queried_only_after_the_launcher_process_exits(world: World) -> None:
+    # ao vivo (2026-10-04): WD_QuerySessions durante o encerramento do emulador travou a DLL (watchdog de 20 s)
+    world.exit_delay = 0.3
+    win = world.add_launcher_window()
+    world.alive[win.pid] = 1000 + win.pid
+    world.worker = {"pid": 77, "hwnd": win.hwnd, "hwnd_pid": win.pid}
+    assert world.launcher().close_all("D") == 1
+    exit_at = world.index("exit", win.pid)
+    sessions = [i for i, e in enumerate(world.timeline) if e[:3] == ("backend", "admin", "sessions")]
+    assert sessions and all(i > exit_at for i in sessions)
+
+
+def test_process_that_hosts_another_profile_is_not_awaited(world: World) -> None:
+    world.exit_delay = 0.3
+    pid = world.new_pid()
+    world.alive[pid] = 1000 + pid
+    win = world.add_launcher_window(pid=pid)
+    world.add_launcher_window("BRAZIL_Z - Pro Client", pid=pid, register="Z")
+    world.worker = {"pid": 77, "hwnd": win.hwnd, "hwnd_pid": pid}
+    start = world.clock()
+    assert world.launcher().close_all("D") == 1
+    assert pid in world.alive                                     # o processo segue com o BRAZIL_Z
+    assert world.clock() - start < 3.0                            # não esperou os 5 s da saída do processo
+
+
+def test_stuck_process_waits_at_most_the_exit_cap(world: World) -> None:
+    world.exit_delay = None                                       # o processo nunca sai (ex.: diálogo do .NET)
+    win = world.add_launcher_window()
+    world.alive[win.pid] = 1000 + win.pid
+    world.worker = {"pid": 77, "hwnd": win.hwnd, "hwnd_pid": win.pid}
+    start = world.clock()
+    assert world.launcher().close_all("D") == 1
+    assert 5.0 <= world.clock() - start < 7.0                     # PROCESS_EXIT_S e depois a conferência
+
