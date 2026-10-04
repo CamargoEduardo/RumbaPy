@@ -56,6 +56,7 @@ CLOSE_CHECKS = (3.0, 8.0)                             # diálogos e novo WM_CLOS
 REGISTER_MAX_S = 45.0
 NOT_CLOSABLE_GRACE = 1.0                              # sem nenhuma janela fechada: quanto esperar o desregistro
 PROCESS_EXIT_S = 5.0                                  # depois das janelas: espera a saída dos processos (sem DLL)
+DIALOG_GONE_S = 1.0                                   # "Short Name" clicado: quanto esperar o modal sumir
 SYSTEM_ERRORS_MAX = 3
 LAUNCHED_KEEP = 5
 IE_TIMEOUT_MAX = 60
@@ -424,6 +425,7 @@ class Launcher:
         for inst in found:                           # 3. oculta -> minimizada sem ativar (C24)
             if not inst.visible:
                 self.user32.show(inst.hwnd, SW_SHOWMINNOACTIVE)
+        self._dismiss_short_name(profile, found)     # 3b.
         exiting = self._exiting_processes(profile, found)
         for inst in found:                           # 4.
             logger.info("close %s: WM_CLOSE em hwnd=%d pid=%d (%s) '%s'", letter, inst.hwnd, inst.pid, inst.kind,
@@ -457,6 +459,27 @@ class Launcher:
             until = deadline if found else min(deadline, self.clock() + NOT_CLOSABLE_GRACE)
             self._verify_unregistered(profile, adm, until, reg)
         return closed                                # 8.
+
+    def _dismiss_short_name(self, profile: Profile, found: list[Instance]) -> None:
+        """Passo 3b (ao vivo, 2026-10-04, L2): o diálogo modal "Short Name already in use" recebe OK ANTES do WM_CLOSE
+        na janela dona — WM_CLOSE com o modal aberto derrubou o Web Launcher (0xC0000005). Só esse diálogo conhecido
+        é clicado; os demais seguem a tabela da E.3 no passo 5."""
+        if not found:
+            return
+        snap = Snapshot(self.user32)
+        clicked: list[int] = []
+        for inst in found:
+            for dialog in dialogs_of(self.user32, inst, snapshot=snap, profile_name=profile.name):
+                if dialog.kind == "short_name":
+                    logger.info("close %s: 'Short Name already in use' (hwnd=%d): OK antes do WM_CLOSE", profile.letter,
+                                dialog.hwnd)
+                    self._click_ok(dialog.hwnd)
+                    clicked.append(dialog.hwnd)
+        until = self.clock() + DIALOG_GONE_S
+        while clicked and self.clock() < until:
+            clicked = [h for h in clicked if self.user32.is_window(h)]
+            if clicked:
+                self.sleep(CLOSE_POLL)
 
     def _exiting_processes(self, profile: Profile, found: list[Instance]) -> dict[int, int | None]:
         """PIDs (com ``created``) que devem sair depois do WM_CLOSE: os das instâncias, menos os que hospedam janela

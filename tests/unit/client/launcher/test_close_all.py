@@ -105,6 +105,9 @@ def test_short_name_dialog_gets_ok_click(world: World) -> None:
                                      texts=["Short Name already in use"], buttons=["OK"])
     assert world.launcher().close_all("D") == 1
     assert world.user32.clicked == [(dialog.hwnd, "OK")]
+    # ao vivo (L2): WM_CLOSE com o modal aberto derrubou o launcher (0xC0000005): o OK vem ANTES do WM_CLOSE do dono
+    click = next(i for i, e in enumerate(world.timeline) if e[:2] == ("user32", "click"))
+    assert click < world.index("user32", "post_close", win.hwnd)
 
 
 def test_hllapi_error_dialog_is_never_clicked(world: World) -> None:
