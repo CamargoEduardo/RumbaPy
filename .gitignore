@@ -1,14 +1,30 @@
+# Dados de trabalho do usuário (ancorados na raiz para não ignorar fixtures de teste nem arquivos do pacote)
+/logs/
+/data/
+/cache/
+/*.xlsx
+/*.csv
+/*.xlsm
+/*.parquet
+/*.html
+/*.txt
+
+# Exceções (H.7, E29): o código do pacote e os testes nunca são ignorados por padrões de dados.
+# As regras de Python/IDE/credenciais vêm DEPOIS para continuar valendo dentro de src/ e tests/.
+!src/**
+!tests/**
+
 # Python specific
 *.pyc
 __pycache__/
 venv/
-logs/
 .venv
-data/
-cache/
+.venv32/
+.pytest_cache/
+.ruff_cache/
 *.log
 
-# Environment variables
+# Environment variables / credenciais locais (NUNCA versionar)
 .env
 config.ini
 
@@ -21,10 +37,10 @@ config.ini
 .DS_Store
 Thumbs.db
 
-# Arquivos
-*.xlsx
-*.csv
-*.xlsm
-*.parquet
-*.html
-*.txt
+# Detalhes internos da infraestrutura (repositório é público)
+docs/interno/
+
+# Artefatos de build
+*.egg-info/
+/build/
+/dist/

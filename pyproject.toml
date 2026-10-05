@@ -1,19 +1,43 @@
 [project]
 name = "rumbapy"
-version = "0.1.5"
+version = "2.0.0"            # tem que bater com src/rumbapy/_version.py (o backend confere)
 description = "Automação de terminais RUMBA via Python e EHLAPI"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
 
-[project.optional-dependencies]
-server32 = [
-    "pywin32", "pywinauto"
+[project.urls]
+Repository = "https://github.com/CamargoEduardo/RumbaPy"
+
+# Backend PEP 517 próprio, só stdlib (H.7): pip instala por archive/<sha>.zip ou git+https sem baixar nada do PyPI.
+[build-system]
+requires = []
+build-backend = "rumbapy_build"
+backend-path = ["_build"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+timeout = 30
+markers = [
+    "live: testes ao vivo contra o RUMBA real (manuais; exigem RUMBAPY_LIVE=1 e guard, J.6)",
+    "e2e: ponta a ponta com o worker real em subprocesso e --fake-dll (J.4)",
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests", "_build"]
+extend-exclude = ["tools/research", "docs"]
 
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+[tool.ruff.lint]
+# Seleção usada no projeto (CLAUDE.md): erros, pyflakes e avisos. A ordem dos imports (comprimento decrescente) não
+# é expressável no isort do ruff: arquivos novos usam "# ruff: noqa: I001" (A.8 l).
+select = ["E", "F", "W"]
+ignore = ["E501"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+pythonPlatform = "Windows"
+include = ["src", "_build"]
+exclude = ["**/__pycache__"]
+typeCheckingMode = "basic"
