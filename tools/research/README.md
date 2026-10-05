@@ -2,18 +2,27 @@
 
 Scripts usados na engenharia reversa documentada em [`docs/RUMBA_EHLLAPI.md`](../../docs/RUMBA_EHLLAPI.md)
 e [`docs/RUMBA_AMBIENTE.md`](../../docs/RUMBA_AMBIENTE.md). **Não fazem parte do pacote `rumbapy`**
-(o `pyproject.toml` só empacota `src/`). Os da tabela abaixo são **somente leitura**: não conectam, não digitam,
-não alteram registro nem instalação. Os roteiros `live_*.py` (seção seguinte) abrem o terminal real.
+(o `pyproject.toml` só empacota `src/`). Os roteiros `live_*.py` (seção "Roteiros ao vivo") abrem o terminal real.
 Toda sonda `live_*_probe.py` é só um invólucro do executor `tests/live/runner.py` (nenhuma carrega a DLL, abre o
 launcher ou manda mensagem a janela por conta própria; `tests/security/test_live_safeguards.py` confere).
+
+### Só leem arquivos ou enumeram janelas (sem mensagens a janelas, sem a DLL do RUMBA)
 
 | Script | Python | Dependências | O que faz |
 |---|---|---|---|
 | `pe_exports.py` | qualquer | stdlib | Lista exports/imports/versão de DLLs PE. `python pe_exports.py ve <dll...>` (`v`=versão, `e`=exports, `i`=imports) |
 | `rdis.py` | 64-bit (venv) | `pefile`, `capstone` | Desmonta exports/endereços com anotação de imports e strings; `--range` e `--xref` |
-| `probe_hllapi.py` | **32-bit** | stdlib | `WD_QuerySystem`, `WD_QuerySessions`, `WD_QuerySessionStatus` (sessões publicadas) |
-| `enum_windows.py` | qualquer | stdlib | Árvore de janelas de um PID (achar o emulador dentro do IE/Edge) |
-| `dde_list.py` | qualquer | stdlib | Lista conversas DDE disponíveis (procure `RUMBADSP`) |
+| `enum_windows.py` | qualquer | stdlib | Árvore de janelas de um PID (achar o emulador dentro do IE/Edge); títulos por `InternalGetWindowText` (não manda `WM_GETTEXT`) |
+
+### Tocam o RUMBA real (só o agente principal ou o dono, com autorização)
+
+Exigem `RUMBAPY_LIVE=1` (recusam com `RUMBAPY_SANDBOX=1`) e a confirmação `SIM` digitada no console (`CONIN$`).
+Rode com o RUMBA ocioso, nunca logo depois de fechar um emulador, e **nunca** mate o processo se travar.
+
+| Script | Python | Dependências | O que faz |
+|---|---|---|---|
+| `probe_hllapi.py` | **32-bit** | stdlib | Carrega a `ehlapi32.Dll` REAL (sem `GuardedDll`) e chama `WD_QuerySystem`, `WD_QuerySessions`, `WD_QuerySessionStatus` (sessões publicadas). Só consultas, mas o `WD_QuerySessions` pode travar dentro da DLL (A.14 l/m): watchdog por chamada com `os._exit` (8 s no `QuerySessions`, 20 s nas demais) e `WD_ResetSystem` no fim |
+| `dde_list.py` | qualquer | stdlib | Lista conversas DDE do serviço `RUMBADSP` (`--all`: curinga). O `DdeConnectList` faz broadcast de `WM_DDE_INITIATE` (`SendMessage`) a todas as janelas de nível superior e abre uma conversa com cada servidor que responder |
 
 ## Roteiros ao vivo da v2 (terminal de PRODUÇÃO)
 
@@ -56,10 +65,11 @@ qualquer PF/PA/transação ou escrita em tela de negócio.
 
 ## Preparar um venv descartável para o `rdis.py`
 
-```bash
+```bat
 python -m venv %TEMP%\rumba_re && %TEMP%\rumba_re\Scripts\pip install pefile capstone
 %TEMP%\rumba_re\Scripts\python tools\research\rdis.py "C:\Program Files (x86)\Micro Focus\RUMBA\System\ehlapi32.Dll" WD_ConnectPS WD_SendKey
-%TEMP%\rumba_re\Scripts\python tools\research\rdis.py --range "...\ehlapi32.Dll" 100034d0 10003c80   # despachante interno
+REM --range: despachante interno
+%TEMP%\rumba_re\Scripts\python tools\research\rdis.py --range "...\ehlapi32.Dll" 100034d0 10003c80
 %TEMP%\rumba_re\Scripts\python tools\research\rdis.py --xref  "...\WHLLAPI.dll" WaitForSingleObject
 ```
 

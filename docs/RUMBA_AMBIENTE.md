@@ -263,6 +263,17 @@ curl -sk https://rumba.srv.volvo.com/rumba694/w2hlegacy/config/procontainerfunc.
 reg query "HKCR\hawlauncher\shell\open\command"
 reg query "HKCR\WOW6432Node\CLSID\{913B101A-EDD1-11D5-AD4A-0060B0FB4900}" /s
 python tools/research/enum_windows.py <pid do iexplore.exe x86>
-%LOCALAPPDATA%\Programs\Python\Python313-32\python.exe tools/research/probe_hllapi.py
-python tools/research/dde_list.py
+```
+
+**Atenção — os dois comandos abaixo tocam o RUMBA real** (só o agente principal ou o dono, com autorização; ver
+`tools/research/README.md`). `probe_hllapi.py` carrega a `ehlapi32.Dll` de produção (sem `GuardedDll`) e chama
+`WD_QuerySessions`, que pode travar dentro da DLL logo depois de um emulador fechar; tem watchdog com `os._exit` e
+`WD_ResetSystem` no fim, e **nunca** se mata o processo à mão. `dde_list.py` faz broadcast de `WM_DDE_INITIATE` a
+todas as janelas de nível superior e abre conversas DDE. Os dois exigem `RUMBAPY_LIVE=1` e a confirmação `SIM` no
+console:
+
+```bat
+set RUMBAPY_LIVE=1
+.venv32\Scripts\python.exe tools\research\probe_hllapi.py
+python tools\research\dde_list.py
 ```

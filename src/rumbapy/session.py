@@ -27,7 +27,7 @@ from typing import Any, Literal
 
 from .errors import (FieldNotFound, HostBusy, NoHostResponse, NotConnected, ParameterError, ProtectedField,
                      RecipeNotAvailable, RumbaError, SessionReplaced, SessionUncertain, TerminalNotOpen, Truncated,
-                     WaitTimeout, HostConnectionLost, RecipeError, TerminalInUse, EncodingError)
+                     WaitTimeout, HostConnectionLost, RecipeError, TerminalInUse, EncodingError, KeyboardLocked)
 from ._types import FieldRead, OpenInfo, Profile, ReadResult, WindowInfo
 from ._user32 import SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, User32
 from .screen import Cursor, Screen
@@ -64,6 +64,9 @@ NO_RESPONSE_HINT = ("NÃO repita a tecla: confira a tela (print(e.screen)) e rea
                     "(ou t.acknowledge()).")
 _READ_BUSY_HINT = "espere o host liberar (t.wait_ready()) e leia de novo."
 INPUT_UNKNOWN = "Não sei se a entrada chegou ao host."   # = sufixo das variantes "input" (WorkerCrashed/WorkerHung)
+# o próprio RESET recusado (G.3): a dica de KeyboardLocked ("use t.press(Key.RESET)") viraria um laço
+RESET_REFUSED_HINT = ("o RUMBA recusou o próprio RESET: aperte Reset na janela do terminal ou feche e abra o terminal "
+                      "de novo; confira a tela (print(t.screen)) antes de repetir qualquer tecla.")
 
 
 # ------------------------------------------------------------------------------------------- utilidades
@@ -197,6 +200,18 @@ def _launcher_for(profile: Profile, python32: Any) -> tuple[Any, User32]:
     return _launcher_factory(user32, _backend_factory(profile, python32)), user32
 
 
+def _check_python32(python32: str | os.PathLike | None) -> None:
+    """I.2: um Python 32-bit explícito (``python32=`` ou ``RUMBAPY_PYTHON32``) que não sirva dá erro na hora em
+    ``open``/``attach`` — mesmo com um processo auxiliar da letra já vivo, que seria reaproveitado sem olhar o caminho
+    (o erro só apareceria quando ele saísse por ociosidade). ``_runtime32.find`` é memoizado por processo."""
+    if _backend_factory is not _default_backend_factory:
+        return                               # fábricas de teste: não há processo auxiliar real
+    if python32 is None and not os.environ.get("RUMBAPY_PYTHON32"):
+        return                               # descoberta automática: feita no spawn, quando precisar
+    from . import _runtime32                 # tardio, como o resto da ponte (A.3)
+    _runtime32.find(python32)
+
+
 # ------------------------------------------------------------------------------------------- registro no processo
 # Quem libera o quê (I8): cada Session conectada segura um "_Hold". ``backend.release()`` (fim do lease) só é
 # chamado quando nenhuma outra Session do processo segura o MESMO objeto Backend. O GC (weakref.finalize) e o atexit
@@ -270,6 +285,7 @@ def open(terminal: str = "D", *, reuse: bool = False, window: WindowMode = "norm
         raise ParameterError.make(detalhe=f"window deve ser 'normal' ou 'minimized' (recebi {window!r}).")
     total = _env_seconds("RUMBAPY_OPEN_TIMEOUT", OPEN_TIMEOUT) if timeout is None else _seconds("timeout", timeout)
     _ensure_latest()
+    _check_python32(python32)
     launcher, user32 = _launcher_for(profile, python32)
     opened = launcher.open(profile, reuse=reuse, window=window, timeout=total)
     _replace_others(profile.letter)          # 2ª open() no processo: as Session anteriores da letra são substituídas
@@ -288,6 +304,7 @@ def attach(terminal: str = "D", *, timeout: float = ATTACH_TIMEOUT,
     profile = profiles.resolve(terminal)
     limit = _seconds("timeout", timeout)
     _ensure_latest()
+    _check_python32(python32)
     launcher, user32 = _launcher_for(profile, python32)
     opened = launcher.attach(profile, timeout=limit)
     return Session(opened.backend, profile, opened.info, timeout=default_timeout(), user32=user32)
@@ -761,6 +778,45 @@ class Session:
             self._wait_ready(limit)
             self._call(self._backend.send, list(chunks[start:start + size]), secret=secret, input_op=True)
 
+    def _send_reset(self, limit: float) -> None:
+        """RESET sozinho (um ``@R`` num ``send`` próprio, sem texto nem AID): a exceção ao ``wait_ready`` da G.3.
+
+        É a tecla que destrava o "X -f" (com ``NORESET`` o teclado só volta com RESET), então NÃO espera o teclado
+        livre: espera só a conexão com o host e manda o ``@R``. O ``X SYSTEM`` continua esperando: o RUMBA recusa a
+        tecla com rc 4 sem enviar nada (``HostBusy`` com ``delivery="none"``) e a tentativa se repete até o prazo
+        (o ``host_busy`` do snapshot não serve aqui: ele também vale para o "X -f", rc 5 do ``WD_CopyPS``). Só roda a
+        pedido do usuário (``press(Key.RESET)``, ``<Reset>`` no início de um trecho, ``send_key('RESET')``); nenhum
+        outro caminho manda RESET sozinho.
+        """
+        self._guard_input()
+        start = self._clock()
+        self._wait(lambda s: True if s.oia.online else None, limit, self._describe_reset(limit), checks=False)
+        while True:
+            self._guard_input()
+            try:
+                self._call(self._backend.send, [Key.RESET.value], secret=False, input_op=True)
+                return
+            except KeyboardLocked as exc:
+                exc.hint = RESET_REFUSED_HINT          # a dica padrão ("use t.press(Key.RESET)") viraria um laço
+                raise
+            except HostBusy as exc:
+                if exc.delivery != "none":
+                    raise
+            elapsed = self._clock() - start
+            if elapsed >= limit:
+                screen = self._snap()
+                raise WaitTimeout(f"O host continua ocupado (X SYSTEM) após {limit:g} s; o RESET não foi enviado."
+                                  + _oia_tail(screen), screen=None if screen.hidden_unknown else screen,
+                                  terminal=self.terminal, delivery="none")
+            self._sleep(min(waits.poll_interval(elapsed), max(0.0, limit - elapsed)))
+
+    @staticmethod
+    def _describe_reset(limit: float) -> Callable[[Screen], str]:
+        def describe(s: Screen) -> str:
+            return (f"O terminal continua sem conexão com o host após {limit:g} s; o RESET não foi enviado."
+                    + _oia_tail(s))
+        return describe
+
     def _press_aid(self, key: Key, limit: float) -> Screen:
         """AID sozinha num ``send`` de 1 chunk, depois espera a resposta do host (``NoHostResponse`` se não vier)."""
         self._guard_input()
@@ -840,13 +896,16 @@ class Session:
 
     def press(self, key: Key | str, *, timeout: float | None = None) -> Session:
         """Pressiona uma tecla. AID (ENTER, CLEAR, PFn, PAn, PAGE_UP/DOWN...) espera a tela estável antes e a resposta
-        do host depois; tecla local (TAB, HOME...) só espera o teclado livre."""
+        do host depois; tecla local (TAB, HOME...) só espera o teclado livre. ``Key.RESET`` (a saída do "X -f") não
+        espera o teclado livre: só o host sair do ``X SYSTEM``."""
         with self._op():
             parsed = Key.parse(key)
             limit = self._timeout(timeout)
             self._guard_input()
             if parsed in AIDS:
                 self._press_aid(parsed, limit)
+            elif parsed is Key.RESET:
+                self._send_reset(limit)
             else:
                 self._wait_ready(limit)
                 self._call(self._backend.send, [parsed.value], secret=False, input_op=True)
@@ -868,12 +927,22 @@ class Session:
 
     def _send_tokens(self, tokens: Sequence[_keys.Token], *, secret: bool = False,
                      timeout: float | None = None) -> Session:
-        """Envia tokens (texto e ``Key``) cortando em cada AID; tudo é validado e codificado ANTES do 1º envio."""
+        """Envia tokens (texto e ``Key``) cortando em cada AID; tudo é validado e codificado ANTES do 1º envio.
+
+        ``Key.RESET`` no INÍCIO de um trecho vai num ``send`` próprio, sem esperar o teclado livre (``_send_reset``);
+        o resto do trecho (texto, teclas locais) e a AID mantêm as esperas normais da G.3."""
         limit = self._timeout(timeout)
-        plan = [(_keys.encode_body(seg.body, host=self.profile.kind, secret=secret), seg.aid)
-                for seg in _keys.split_at_aids(tokens)]
+        plan: list[tuple[bool, list[str], Key | None]] = []
+        for seg in _keys.split_at_aids(tokens):
+            lead = 0
+            while lead < len(seg.body) and seg.body[lead] is Key.RESET:
+                lead += 1                          # vários RESET seguidos = um só (a tecla é idempotente)
+            plan.append((lead > 0, _keys.encode_body(seg.body[lead:], host=self.profile.kind, secret=secret),
+                         seg.aid))
         self._guard_input()
-        for chunks, aid in plan:
+        for reset, chunks, aid in plan:
+            if reset:
+                self._send_reset(limit)
             if chunks:
                 self._send_body(chunks, secret, limit)
             if aid is not None:

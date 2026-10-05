@@ -9,9 +9,10 @@ import sys
 import pytest
 
 import rumbapy
+from tests.unit.client.bridge.test_doctor import probes as doctor_probes
 from tests.e2e.update.support import PKG_SRC, SHA_B, child_env, run_python
 from rumbapy.errors import UpdateCheckFailed, UpdateRequired, UpdateFailed
-from rumbapy import __main__ as cli, _update
+from rumbapy import __main__ as cli, _update, _doctor
 
 
 @pytest.fixture(autouse=True)
@@ -87,10 +88,11 @@ def test_close_and_doctor_delegate(monkeypatch: pytest.MonkeyPatch, capsys: pyte
         ok = False
 
     monkeypatch.setattr(rumbapy, "close", lambda terminal: calls.append(terminal) or 2, raising=False)
-    monkeypatch.setattr(rumbapy, "doctor", lambda verbose=False: calls.append(verbose) or Report(), raising=False)
+    monkeypatch.setattr(_doctor, "run", lambda verbose=False, update_failure=None:
+                        calls.append((verbose, update_failure)) or Report())
     assert cli.main(["close", "d"]) == 0
     assert cli.main(["doctor", "--verbose"]) == 1
-    assert calls == ["d", True]
+    assert calls == ["d", (True, None)]
     assert "2 janela(s) do terminal D fechada(s)" in capsys.readouterr().out
 
 
@@ -109,36 +111,29 @@ def _offline(monkeypatch: pytest.MonkeyPatch, motivo: str = "info/refs: conexão
 @pytest.mark.parametrize("report_ok", [True, False])
 def test_doctor_runs_without_network(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
                                      report_ok: bool) -> None:
-    # sem GitHub (VPN caída) o doctor é o que mais ajuda: a falha da checagem vira item e o diagnóstico roda
+    """Sem GitHub (VPN caída) o doctor é o que mais ajuda: a falha da checagem vira ITEM do relatório real (``collect``
+    com Probes falsos, não um dublê do ``doctor``), o rodapé não diz "Tudo certo." e o GitHub não é consultado de novo."""
     seen = _offline(monkeypatch)
-    calls: list[bool] = []
-
-    class Report:
-        ok = report_ok
-
-    def fake_doctor(verbose: bool = False) -> Report:
-        calls.append(verbose)
-        print("RumbaPy 2.0.0 — diagnóstico")
-        return Report()
-
-    monkeypatch.setattr(rumbapy, "doctor", fake_doctor, raising=False)
+    remote_calls: list[int] = []
+    fake = doctor_probes(remote_sha=lambda: remote_calls.append(1) or "a" * 40,
+                         **({} if report_ok else {"is_file": lambda path: False}))
+    monkeypatch.setattr(_doctor, "Probes", lambda: fake)
     assert cli.main(["doctor", "--verbose"]) == cli.EXIT_ERROR
-    assert seen == [("cli", False)] and calls == [True]
+    assert seen == [("cli", False)] and remote_calls == []
     captured = capsys.readouterr()
-    assert captured.out.startswith("[FALHA] Update obrigatório: Não consegui verificar a versão mais recente no "
-                                   "GitHub (info/refs: conexão recusada; api: conexão recusada)")
-    assert "RumbaPy 2.0.0 — diagnóstico" in captured.out
+    lines = captured.out.splitlines()
+    assert lines[0] == "RumbaPy 2.0.0 — diagnóstico"                    # a falha está DENTRO do relatório
+    assert any(line.startswith("[FALHA] Update obrigatório: Não consegui verificar a versão mais recente no GitHub "
+                               "(info/refs: conexão recusada; api: conexão recusada)") for line in lines)
+    assert "Tudo certo." not in captured.out and lines[-1] == "Há itens com FALHA: veja acima como resolver."
     assert captured.err == "" and "Traceback" not in captured.out
 
 
 def test_doctor_without_network_sanitizes_reason(monkeypatch: pytest.MonkeyPatch,
                                                  capsys: pytest.CaptureFixture[str]) -> None:
     _offline(monkeypatch, motivo="proxy proxy.interno.example.com (10.1.2.3) recusou https://x.example.com/a")
-
-    class Report:
-        ok = True
-
-    monkeypatch.setattr(rumbapy, "doctor", lambda verbose=False: Report(), raising=False)
+    fake = doctor_probes()
+    monkeypatch.setattr(_doctor, "Probes", lambda: fake)
     assert cli.main(["doctor"]) == cli.EXIT_ERROR
     out = capsys.readouterr().out
     assert "proxy.interno" not in out and "10.1.2.3" not in out and "x.example.com" not in out
@@ -164,7 +159,7 @@ def test_doctor_other_update_errors_still_abort(monkeypatch: pytest.MonkeyPatch,
 
     calls: list[bool] = []
     monkeypatch.setattr(_update, "ensure_latest", broken)
-    monkeypatch.setattr(rumbapy, "doctor", lambda verbose=False: calls.append(verbose), raising=False)
+    monkeypatch.setattr(_doctor, "run", lambda verbose=False, update_failure=None: calls.append(verbose))
     assert cli.main(["doctor"]) == cli.EXIT_ERROR
     assert calls == []
     assert capsys.readouterr().err.startswith("A atualização do RumbaPy falhou")
@@ -174,6 +169,60 @@ def test_usage_error() -> None:
     with pytest.raises(SystemExit) as info:
         cli.main(["voar"])
     assert info.value.code == 2
+
+
+@pytest.mark.parametrize(("argv", "expected"), [
+    ([], "python -m rumbapy: erro: faltam os argumentos: {doctor,close,version,update}"),
+    (["close"], "python -m rumbapy close: erro: faltam os argumentos: terminal"),
+    (["foo"], "erro: argumento {doctor,close,version,update}: opção inválida: 'foo' (escolha entre "),
+    (["doctor", "--nada"], "python -m rumbapy: erro: argumentos não reconhecidos: --nada"),
+])
+def test_usage_errors_in_portuguese(capsys: pytest.CaptureFixture[str], argv: list[str], expected: str) -> None:
+    with pytest.raises(SystemExit) as info:
+        cli.main(argv)
+    assert info.value.code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("uso: python -m rumbapy") and expected in err
+    assert "usage:" not in err and "error:" not in err and "required" not in err
+
+
+def test_help_in_portuguese(capsys: pytest.CaptureFixture[str]) -> None:
+    for argv in (["--help"], ["doctor", "-h"], ["close", "--help"]):
+        with pytest.raises(SystemExit) as info:
+            cli.main(argv)
+        assert info.value.code == 0
+        out = capsys.readouterr().out
+        assert out.startswith("uso: python -m rumbapy") and "mostra esta ajuda e sai" in out
+        assert "show this help" not in out and "options:" not in out and "usage:" not in out
+
+
+def test_version_ignores_the_last_check_of_another_install(monkeypatch: pytest.MonkeyPatch,
+                                                           capsys: pytest.CaptureFixture[str]) -> None:
+    """O ``update-state.json`` é por usuário: a checagem de OUTRO venv não aparece como se fosse desta instalação."""
+    other = {"checked_at": 1791156973.0, "context": "cli", "mode": "archive", "local": "c" * 40, "remote": "e" * 40,
+             "result": "updated", "version": "2.0.0"}
+    monkeypatch.setattr(_update, "install_mode", lambda: ("unknown", None))
+    monkeypatch.setattr(_update, "read_state", lambda: other)
+    assert cli.main(["version"]) == 0
+    out = capsys.readouterr().out
+    assert "última checagem: nenhuma desta instalação" in out and "outra instalação do RumbaPy" in out
+    assert "(updated, remoto eeeeeee)" not in out
+    monkeypatch.setattr(_update, "install_mode", lambda: ("archive", "e" * 40))   # esta é o resultado daquele update
+    assert cli.main(["version"]) == 0
+    assert "(updated, remoto eeeeeee)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("state", "mode", "commit", "other"), [
+    (None, "archive", "a" * 40, False),
+    ({"local": "a" * 40, "remote": "a" * 40, "result": "up-to-date", "mode": "archive"}, "archive", "a" * 40, False),
+    ({"local": "c" * 40, "remote": "a" * 40, "result": "updated", "mode": "unknown"}, "archive", "a" * 40, False),
+    ({"local": "c" * 40, "remote": "a" * 40, "result": "up-to-date", "mode": "archive"}, "archive", "a" * 40, True),
+    ({"local": None, "remote": "a" * 40, "result": "failed", "mode": "unknown"}, "unknown", None, False),
+    ({"local": "c" * 40, "remote": "e" * 40, "result": "updated", "mode": "archive"}, "unknown", None, True),
+    ({"local": "c" * 40, "remote": "e" * 40, "result": "updated", "mode": "archive"}, "dev", None, True),
+])
+def test_checked_by_other_install(state: dict | None, mode: str, commit: str | None, other: bool) -> None:
+    assert _update.checked_by_other_install(state, mode, commit) is other
 
 
 def test_python_m_rumbapy_subprocess(tmp_path: Path) -> None:

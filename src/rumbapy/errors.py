@@ -359,9 +359,12 @@ class HostBusy(HllapiError):
 
 
 class KeyboardLocked(HllapiError):
-    templates = {"default": "O RUMBA recusou as teclas (teclado bloqueado); parte delas pode ter sido digitada."}
-    hints = {"default": "confira a tela (print(t.screen)) antes de repetir qualquer tecla; se houver 'X -f', use "
-                        "t.press(Key.RESET)."}
+    # "none": a 1ª tecla foi recusada (nada digitado); "write": WD_CopyStringToPS rc 5 (nada copiado, D.5)
+    templates = {"default": "O RUMBA recusou as teclas (teclado bloqueado); parte delas pode ter sido digitada.",
+                 "none": "O RUMBA recusou as teclas (teclado bloqueado); nada foi digitado.",
+                 "write": "O RUMBA recusou a escrita (teclado bloqueado); nada foi escrito."}
+    hints = {variant: "confira a tela (print(t.screen)) antes de repetir qualquer tecla; se houver 'X -f', use "
+                      "t.press(Key.RESET)." for variant in ("default", "none", "write")}
 
 
 class Truncated(HllapiError):

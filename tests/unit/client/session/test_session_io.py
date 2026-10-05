@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from rumbapy.errors import (EncodingError, HostBusy, InvalidPosition, NoHostResponse, ParameterError,
-                            ProtectedField, Truncated, UndefinedKey, WaitTimeout)
+                            ProtectedField, Truncated, UndefinedKey, WaitTimeout, KeyboardLocked)
 from tests.unit.client.session.support import aids, echo_host, make_session, send_calls, table_screen
 from rumbapy.keys import Key
 from tests.fakes import scenarios
@@ -316,3 +316,34 @@ def test_write_and_fill_hidden_field_encoding_error_never_cites_the_char(table):
     with pytest.raises(EncodingError) as visible:
         t.write(3, 14, "ałb")                     # campo visível: a mensagem continua útil
     assert "U+0142" in visible.value.message
+
+
+# ------------------------------------------------------------------------------------------- KeyboardLocked sem entrega
+
+@pytest.mark.parametrize("action", [lambda t: t.write(3, 14, "C"), lambda t: t.fill(3, 14, "C")],
+                         ids=["write", "fill"])
+def test_locked_write_says_nothing_was_written(table, action):
+    """``WD_CopyStringToPS`` rc 5 = nada copiado (``delivery="none"``): a mensagem não pode dizer que parte foi digitada."""
+    t, _, fake = table
+    fake.sessions["D"].inhibited = True
+    with pytest.raises(KeyboardLocked) as info:
+        action(t)
+    exc = info.value
+    assert exc.delivery == "none" and t.state == "ok"
+    assert exc.message == "O RUMBA recusou a escrita (teclado bloqueado); nada foi escrito."
+    assert "parte" not in str(exc) and "Key.RESET" in exc.hint
+    s = fake.sessions["D"]
+    assert s.buffer[s.pos(3, 14) - 1:s.pos(3, 14)] == b" "            # o PS não mudou
+
+
+def test_locked_first_key_says_nothing_was_typed(table):
+    t, _, fake = table
+    fake.rc_override["WD_SendKey"] = [5]
+    with pytest.raises(KeyboardLocked) as none:
+        t.press(Key.TAB)
+    assert none.value.delivery == "none"
+    assert none.value.message == "O RUMBA recusou as teclas (teclado bloqueado); nada foi digitado."
+    fake.rc_override["WD_SendKey"] = [0, 5]
+    with pytest.raises(KeyboardLocked) as partial:
+        t.send_keys("<Home>" * 100)                    # 2 chunks; o 2º recusado: parte já foi digitada
+    assert partial.value.delivery == "partial" and "parte delas pode ter sido digitada" in partial.value.message

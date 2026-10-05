@@ -10,6 +10,7 @@ from tests.fakes import scenarios
 from rumbapy import session as session_mod
 
 import rumbapy
+import os
 
 import pytest
 
@@ -176,3 +177,64 @@ def test_window_of_an_edge_ie_mode_tab_is_refused():
         assert t.state == "ok"
     finally:
         t.release()
+
+
+# ------------------------------------------------------------------------------------------- python32 explícito (I.2)
+
+@pytest.fixture
+def real_backend_factory(monkeypatch):
+    """Fábrica de backend PADRÃO (a que sobe o processo auxiliar real) com launcher falso: ``_runtime32.find``
+    trocado por um registro; nada sobe worker (o launcher falso não chama o ``get_backend``)."""
+    from rumbapy import _runtime32
+    from rumbapy.errors import Python32NotFound
+
+    fake = FakeLauncher(scenarios.cics_login())
+    user32 = user32_with_window()
+    found: list = []
+
+    def find(explicit=None):
+        found.append(explicit)
+        target = explicit if explicit is not None else os.environ.get("RUMBAPY_PYTHON32")
+        if "nao" in str(target):
+            raise Python32NotFound.make(motivo=f"argumento python32: {target} não existe")
+        return None
+
+    monkeypatch.setattr(_runtime32, "find", find)
+    monkeypatch.setattr(session_mod, "_ensure_latest", lambda: None)
+    monkeypatch.delenv("RUMBAPY_PYTHON32", raising=False)
+    session_mod._set_factories(backend_factory=None, user32_factory=lambda: user32,
+                               launcher_factory=lambda u32, get: fake)
+    yield fake, found
+    session_mod._set_factories(backend_factory=None, user32_factory=None, launcher_factory=None)
+
+
+def test_invalid_explicit_python32_fails_at_once_even_with_a_live_worker(real_backend_factory):
+    """Com um worker da letra vivo, o caminho errado passaria despercebido até ele sair por ociosidade (I.2)."""
+    from rumbapy.errors import Python32NotFound
+
+    fake, found = real_backend_factory
+    for call in (lambda: rumbapy.open("D", python32=r"C:\nao\existe\python.exe"),
+                 lambda: rumbapy.attach("D", python32=r"C:\nao\existe\python.exe")):
+        with pytest.raises(Python32NotFound):
+            call()
+    assert fake.calls == [] and found == [r"C:\nao\existe\python.exe"] * 2
+
+
+def test_invalid_rumbapy_python32_fails_at_once(real_backend_factory, monkeypatch):
+    from rumbapy.errors import Python32NotFound
+
+    fake, found = real_backend_factory
+    monkeypatch.setenv("RUMBAPY_PYTHON32", r"C:\nao\python.exe")
+    with pytest.raises(Python32NotFound):
+        rumbapy.attach("D")
+    assert fake.calls == [] and found == [None]
+
+
+def test_automatic_discovery_is_left_to_the_spawn(real_backend_factory):
+    fake, found = real_backend_factory
+    t = rumbapy.attach("D")
+    t.release()
+    assert found == [] and fake.calls[0][0] == "attach"
+    t = rumbapy.open("D", python32=r"C:\py32\python.exe")
+    t.release()
+    assert found == [r"C:\py32\python.exe"]

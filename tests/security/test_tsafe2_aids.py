@@ -239,3 +239,55 @@ def test_compat_logon_cics_is_two_enters(legacy: Callable[[FakeEhllapi], Any]) -
     assert client.logon_cics(USER, PASSWORD) is True
     assert client.screen_load(5, 20, "Signon") is True
     assert aids(fake) == ["ENTER", "ENTER"]
+
+
+# ------------------------------------------------------------------------------------------- RESET só a pedido (G.3)
+
+def _has_reset(raw: bytes) -> bool:
+    return b"@R" in raw.replace(b"@@", b"")                # '@@' é '@' literal (texto)
+
+
+@pytest.mark.parametrize("action", [c[1] for c in SESSION_CASES], ids=[c[0] for c in SESSION_CASES])
+def test_no_input_api_sends_reset_on_its_own(action: Callable[[Any], Any]) -> None:
+    """Teclado bloqueado ("X -f"): nenhuma API de entrada manda RESET sozinha (Q4/K-R9) — falha e espera o script."""
+    fake = table_screen()
+    echo_host(fake)
+    t, _, _ = make_session(fake, timeout=0.1)
+    try:
+        fake.sessions["D"].inhibited = True
+        try:
+            action(t)
+        except RumbaError:
+            pass
+        assert not any(_has_reset(raw) for raw in send_calls(fake))
+        assert aids(fake) == [] and fake.sessions["D"].inhibited is True
+    finally:
+        t.release()
+
+
+@pytest.mark.parametrize("action", [lambda t: t.press(Key.RESET), lambda t: t.send_keys("<Reset>"),
+                                    lambda t: t.send_keys("<Reset><Reset>")],
+                         ids=["press", "send_keys", "send_keys_twice"])
+def test_explicit_reset_is_exactly_one_reset_and_no_aid(action: Callable[[Any], Any]) -> None:
+    fake = table_screen()
+    t, _, _ = make_session(fake, timeout=0.5)
+    try:
+        fake.sessions["D"].inhibited = True
+        action(t)
+        assert send_calls(fake) == [b"@R"] and aids(fake) == []
+        assert fake.sessions["D"].inhibited is False
+        assert_one_aid_per_call_at_the_end(fake)
+    finally:
+        t.release()
+
+
+def test_compat_send_key_reset_unlocks_without_the_120_s_wait(legacy: Callable[[FakeEhllapi], Any]) -> None:
+    fake = echo_table()
+    client = legacy(fake)
+    client.copy_ps_to_string(1, 2, 5)                        # anexa (antes do "X -f")
+    fake.sessions["D"].inhibited = True
+    assert client.send_key("RESET") is True
+    assert send_calls(fake) == [b"@R"] and aids(fake) == [] and fake.sessions["D"].inhibited is False
+    fake.sessions["D"].inhibited = True
+    assert client.send_key("@R") is True
+    assert fake.sessions["D"].inhibited is False and aids(fake) == []

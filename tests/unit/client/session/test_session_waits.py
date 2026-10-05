@@ -3,12 +3,15 @@
 # ruff: noqa: I001
 from __future__ import annotations
 
-from rumbapy.errors import HostError, InvalidPosition, ParameterError, WaitTimeout
-from tests.unit.client.session.support import echo_host, make_session, table_screen
+from tests.unit.client.session.support import aids, echo_host, make_session, send_calls, table_screen
+from rumbapy.errors import HostError, InvalidPosition, KeyboardLocked, ParameterError, WaitTimeout
+from rumbapy import session as session_mod
 from rumbapy.screen import Cursor
 from tests.fakes import scenarios
+from rumbapy.keys import Key
 
 import dataclasses
+import time
 import re
 
 import pytest
@@ -190,6 +193,81 @@ def test_press_before_aid_needs_ready_keyboard(table):
     assert "teclado continua bloqueado" in info.value.message
     assert fake.sessions["D"].aid_log == []                 # nunca envia RESET nem a AID sozinho
     assert t.state == "ok"
+
+
+# ------------------------------------------------------------------------------------------- RESET: a saída do "X -f" (G.3)
+
+def _sendkeys(fake) -> list[bytes]:
+    return [call for call in send_calls(fake) if isinstance(call, bytes)]
+
+
+@pytest.mark.parametrize("action", [lambda t: t.press(Key.RESET), lambda t: t.press("RESET"),
+                                    lambda t: t.press("@R"), lambda t: t.send_keys("<Reset>")],
+                         ids=["press_key", "press_name", "press_mnemonic", "send_keys"])
+def test_reset_unlocks_x_f_without_waiting_for_a_free_keyboard(table, action):
+    """Com NORESET o "X -f" só sai com RESET: a dica de KeyboardLocked/WaitTimeout tem de funcionar (R28/K-R9)."""
+    t, _, fake = table
+    fake.sessions["D"].inhibited = True
+    start = time.monotonic()
+    action(t)
+    assert time.monotonic() - start < 0.25                  # não esperou o prazo (0.3 s) do teclado livre
+    assert _sendkeys(fake) == [b"@R"]                       # exatamente o RESET, num WD_SendKey próprio
+    assert fake.sessions["D"].inhibited is False and fake.sessions["D"].aid_log == []
+    assert t.wait_ready(timeout=0.1).oia.ready and t.state == "ok"
+
+
+def test_reset_then_text_and_aid_keep_the_normal_waits(table):
+    t, _, fake = table
+    fake.sessions["D"].inhibited = True
+    t.send_keys("<Reset><Home>abc")
+    assert _sendkeys(fake)[0] == b"@R" and len(_sendkeys(fake)) == 2   # RESET sozinho, depois o corpo
+    assert b"@R" not in _sendkeys(fake)[1]
+    fake.sessions["D"].inhibited = True
+    t.send_keys("<Reset><Enter>")
+    assert _sendkeys(fake)[2:] == [b"@R", b"@E"] and aids(fake) == ["ENTER"]
+
+
+def test_reset_after_text_still_waits_for_a_free_keyboard(table):
+    """Só o RESET no INÍCIO de um trecho é isento: 'abc<Reset>' digitaria 'abc' no teclado bloqueado."""
+    t, _, fake = table
+    fake.sessions["D"].inhibited = True
+    with pytest.raises(WaitTimeout) as info:
+        t.send_keys("abc<Reset>", timeout=0.1)
+    assert "teclado continua bloqueado" in info.value.message
+    assert _sendkeys(fake) == [] and fake.sessions["D"].inhibited is True
+
+
+def test_reset_waits_for_x_system_and_never_recommends_itself(table):
+    t, _, fake = table
+    fake.sessions["D"].inhibited = True
+    fake.sessions["D"].lock_for(5.0)                        # X SYSTEM: o RESET continua esperando
+    with pytest.raises(WaitTimeout) as info:
+        t.press(Key.RESET, timeout=0.1)
+    assert info.value.message.startswith("O host continua ocupado (X SYSTEM) após 0.1 s; o RESET não foi enviado.")
+    assert "Key.RESET" not in str(info.value) and info.value.delivery == "none"
+    assert set(_sendkeys(fake)) == {b"@R"}                  # tentativas recusadas com rc 4 (nada enviado)
+    assert fake.sessions["D"].inhibited is True and t.state == "ok"
+    fake.sessions["D"].locked_until = 0.0
+    t.press(Key.RESET)
+    assert fake.sessions["D"].inhibited is False and fake.sessions["D"].aid_log == []
+
+
+def test_reset_retries_while_x_system_and_goes_out_when_it_ends(table):
+    t, _, fake = table
+    fake.sessions["D"].inhibited = True
+    fake.sessions["D"].lock_for(0.15)
+    t.press(Key.RESET, timeout=2.0)
+    assert fake.sessions["D"].inhibited is False and t.wait_ready(timeout=0.1).oia.ready
+
+
+def test_reset_refused_does_not_loop_on_the_reset_hint(table):
+    t, _, fake = table
+    fake.sessions["D"].inhibited = True
+    fake.rc_override["WD_SendKey"] = [5]
+    with pytest.raises(KeyboardLocked) as info:
+        t.press(Key.RESET)
+    assert info.value.hint == session_mod.RESET_REFUSED_HINT and "Key.RESET" not in str(info.value)
+    assert info.value.delivery == "none" and t.state == "ok"
 
 
 # ------------------------------------------------------------------------------------------- erro grave e a AID (A.14)

@@ -88,6 +88,9 @@ def error_for(func: str, rc: int, ctx: Mapping[str, Any] | None = None) -> Rumba
     if kind == "busy":
         return HostBusy.make(**common)
     if kind == "locked":
+        # a mensagem não pode dizer "parte pode ter sido digitada" quando nada saiu (delivery "none")
+        if common.get("delivery") == "none":
+            return KeyboardLocked.make("write" if func == "WD_CopyStringToPS" else "none", **common)
         return KeyboardLocked.make(**common)
     if kind == "undefined_key":
         x = ctx.get("x") or "?"

@@ -33,7 +33,10 @@ comportamento listadas em "Compatibilidade" — todas para trocar falhas silenci
   todas as esperas.
 * Hierarquia de exceções em português (`rumbapy.RumbaError` e dezenas de subclasses), cada uma com dica de "Como resolver",
   código da DLL e `delivery` (`none`/`partial`/`unknown`) em toda falha de entrada.
-* `rumbapy.doctor()` e a linha de comando `python -m rumbapy {version | update | doctor | close <L>}`.
+* `rumbapy.doctor()` e a linha de comando `python -m rumbapy {version | update | doctor | close <L>}` (ajuda e erros
+  de uso em português; sem rede, o `doctor` mostra `[FALHA] Update obrigatório` como item do relatório e sai com 1).
+* Teclado bloqueado por erro de digitação (`X -f`): `t.press(Key.RESET)` (ou `<Reset>` no início de `send_keys`)
+  destrava sem esperar o teclado livre; o RumbaPy nunca manda RESET por conta própria.
 * Logs em `%LOCALAPPDATA%\rumbapy\logs\` (cliente, processo auxiliar por letra, update, pip), sem senha e sem texto de
   tela em nível nenhum.
 * Vários terminais ao mesmo tempo (`D`, `Z`, `A`), um processo auxiliar por letra.
@@ -92,7 +95,7 @@ exceção v2 original (tipo preservado; todas são `RuntimeError`) com a mensage
 | `logon_cics` | qualquer letra | só terminais CICS (`D`, `Z`; senão `RecipeNotAvailable`); confere que o campo de senha é oculto antes de escrever |
 | `logon_rhelp` | qualquer letra | só terminal IMS (`RumbaClient("A")`) |
 | `send_key` | rc ignorado; a DLL descartava calada o que viesse depois da 1ª AID | rc ≠ 0 levanta; o trecho após a 1ª AID é ignorado com WARNING "send_key: ignorado o trecho após a 1ª tecla AID (comportamento da v0.1.5)"; espera a resposta do host até 120 s (ou `Session.timeout`, se maior) → `NoHostResponse` |
-| teclado bloqueado | a conexão usava AUTORESET (destravava sozinho) | `NORESET`: `KeyboardLocked` com a dica de `Key.RESET` (nunca manda RESET sozinho) |
+| teclado bloqueado | a conexão usava AUTORESET (destravava sozinho) | `NORESET`: `KeyboardLocked` com a dica de `send_key('RESET')` (nunca manda RESET sozinho); `send_key('RESET')` destrava o `X -f` sem esperar o teclado livre (só espera o fim do `X SYSTEM`) |
 | `copy_ps_to_string` | UTF-8 (acento derrubava) e corte no 1º NUL | cp1252; NUL no meio ainda corta como antes; com o host ocupado (X SYSTEM) espera até 120 s; `length=0` → `""` sem anexar |
 | `copy_string_to_ps` | ASCII (acento derrubava); escrevia pela metade | cp1252; `ProtectedField`/`Truncated` levantam **antes** de escrever; `""` não faz nada e devolve `True`; em campo oculto o erro de caractere não cita o caractere |
 | `copy_field` | no máximo 80 caracteres | tamanho real do campo; tira só os NUL finais |

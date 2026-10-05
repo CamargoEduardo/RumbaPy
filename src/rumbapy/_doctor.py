@@ -36,6 +36,7 @@ LAUNCHER_KEY = r"hawlauncher\shell\open\command"
 ENV_SHOWN = ("RUMBAPY_SANDBOX", "RUMBAPY_DEV", "RUMBAPY_LIVE", "RUMBAPY_GUARD", "RUMBAPY_QUIET", "RUMBAPY_LOG_LEVEL",
              "RUMBAPY_LAUNCH", "RUMBAPY_OPEN_TIMEOUT")
 _MARK = {"ok": "[ok]   ", "aviso": "[aviso]", "falha": "[FALHA]", "info": "[info] "}
+UPDATE_ITEM = "Update obrigatório"
 
 # cópia das regras de _instances.sanitize (usada se o módulo não puder ser importado)
 _ADDRESS_RE = re.compile(r"(Address:\s*)\S+", re.IGNORECASE)
@@ -149,8 +150,9 @@ def _update_status() -> dict[str, Any]:
     if os.environ.get("RUMBAPY_DEV") == "1":
         # H.2: o aviso "AUTO-UPDATE DESLIGADO" sai uma vez por processo (no import ou no ``ensure_latest("cli")``);
         # ``_update.status()`` chamaria ``install_mode()`` de novo e repetiria o aviso e o WARNING no update.log.
+        state = _update.read_state()
         return {"version": _version.__version__, "mode": "dev", "commit": None, "error": None,
-                "last_check": _update.read_state()}
+                "last_check": state, "last_check_other": _update.checked_by_other_install(state, "dev", None)}
     return _update.status()
 
 
@@ -241,17 +243,41 @@ def _check_package(p: Probes) -> Check:
     extra = [f"build_id: {p.build_id()}", f"protocolo: {_protocol.PROTOCOL}"]
     last = status.get("last_check")
     if isinstance(last, dict):
-        extra.append(f"última checagem: {last.get('at', '?')} resultado={last.get('result', '?')} "
-                     f"remoto={_short(last.get('remote'))}")
+        other = " (registrada por outra instalação do RumbaPy deste usuário)" if status.get("last_check_other") else ""
+        extra.append(f"última checagem: {format_checked_at(last.get('checked_at'))} resultado={last.get('result', '?')} "
+                     f"remoto={_short(last.get('remote'))}{other}")
     if status.get("error"):
         return Check("RumbaPy", "aviso", detail + f" — {sanitize(status['error'])}", extra)
     return Check("RumbaPy", "ok", detail, extra)
 
 
-def _check_github(p: Probes) -> Check:
+def format_checked_at(value: Any) -> str:
+    """``checked_at`` do ``update-state.json`` (epoch) como ``AAAA-MM-DD HH:MM:SS`` (``?`` se ausente/inválido)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "?"
+    from datetime import datetime
+
+    try:
+        return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M:%S")
+    except (OverflowError, OSError, ValueError):
+        return "?"
+
+
+def _check_update_failure(failure: BaseException) -> Check:
+    """A checagem obrigatória do update (``ensure_latest("cli")``) não alcançou o GitHub: vira item do relatório."""
+    message = getattr(failure, "message", None) or str(failure)
+    hint = getattr(failure, "hint", None)
+    return Check(UPDATE_ITEM, "falha", sanitize(message) + (f" Como resolver: {sanitize(hint)}" if hint else ""))
+
+
+def _check_github(p: Probes, update_failure: BaseException | None = None) -> Check:
     env = p.env()
     if env.get("RUMBAPY_SANDBOX") == "1" and not env.get("RUMBAPY_TEST_GITHUB"):
         return Check("GitHub", "info", "não consultado (modo sandbox dos testes)")
+    if update_failure is not None:
+        # a checagem do update acabou de falhar: consultar de novo só dobraria a espera (até ~26 s sem rede)
+        return Check("GitHub", "aviso", f"não consultado de novo (a checagem do update acabou de falhar: veja "
+                                        f"'{UPDATE_ITEM}'); sem rede/VPN o auto-update não roda")
     try:
         remote = p.remote_sha()
     except Exception as exc:
@@ -263,8 +289,9 @@ def _check_github(p: Probes) -> Check:
     except Exception:
         commit = None
     if commit and commit != remote:
+        # o ensure_latest deste processo pode ter usado o cache de 60 s: "rode de novo" não bastaria (o update força)
         return Check("GitHub", "aviso", f"há versão nova publicada ({_short(remote)}; instalada {_short(commit)}): "
-                                        "rode o script de novo para atualizar")
+                                        "rode python -m rumbapy update para instalar agora")
     return Check("GitHub", "ok", f"alcançável; versão publicada {_short(remote)}")
 
 
@@ -352,14 +379,20 @@ def _check_paths(p: Probes) -> Check:
     return Check("Logs", "info", str(_paths.logs_dir()), extra)
 
 
-def collect(*, verbose: bool = False, probes: Probes | None = None) -> DoctorReport:
-    """Monta o relatório sem imprimir (usado por ``doctor`` e pelos testes)."""
+def collect(*, verbose: bool = False, probes: Probes | None = None,
+            update_failure: BaseException | None = None) -> DoctorReport:
+    """Monta o relatório sem imprimir (usado por ``doctor`` e pelos testes).
+
+    ``update_failure``: a ``UpdateCheckFailed`` da checagem obrigatória do CLI (A.12 c) vira o item
+    ``[FALHA] Update obrigatório`` (o relatório fica ``ok=False``) e o GitHub não é consultado de novo.
+    """
     p = probes or Probes()
     p = replace(p, update_status=_once(p.update_status))  # o estado do update é lido uma vez por relatório
     checks = [
         _guard("Sistema", _check_system),
         _guard("RumbaPy", lambda: _check_package(p)),
-        _guard("GitHub", lambda: _check_github(p)),
+        *([_guard(UPDATE_ITEM, lambda: _check_update_failure(update_failure))] if update_failure is not None else []),
+        _guard("GitHub", lambda: _check_github(p, update_failure)),
         _guard("RUMBA (DLL HLLAPI)", lambda: _check_dll(p)),
         _guard("Host Access Web Launcher", lambda: _check_launcher(p)),
         _guard("Python 32-bit", lambda: _check_python32(p)),
@@ -376,7 +409,13 @@ def doctor(*, verbose: bool = False) -> DoctorReport:
     Não toca o terminal: só lê arquivos, o registro do Windows e o estado dos processos auxiliares já vivos.
     ``report.ok`` é ``False`` se algum item falhou; ``print(report)`` repete o texto.
     """
-    report = collect(verbose=verbose)
+    return run(verbose=verbose)
+
+
+def run(*, verbose: bool = False, update_failure: BaseException | None = None,
+        probes: Probes | None = None) -> DoctorReport:
+    """``doctor()`` com a falha da checagem do update do CLI (``python -m rumbapy doctor`` sem rede, A.12 c)."""
+    report = collect(verbose=verbose, probes=probes, update_failure=update_failure)
     logger.info("doctor: ok=%s %s", report.ok, " ".join(f"{c.name}={c.status}" for c in report.checks))
     stream = sys.stdout
     if stream is not None:

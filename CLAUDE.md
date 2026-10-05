@@ -145,7 +145,7 @@ Regras de camada (verificadas por `tests/unit/test_layering.py`): `_worker/*` s�
 
 * Windows com RUMBA instalado pelo portal (`<portal>`; a URL real é `profiles.PORTAL_DEFAULT`).
 * Dois Pythons: x64 em `C:\Codes\RumbaPy\.venv\Scripts\python.exe` e x86 em `C:\Codes\RumbaPy\.venv32\Scripts\python.exe`
-  (ambos com `pytest` e `pytest-timeout`); `ruff` em `.venv\Scripts\ruff.exe`. `py -0p` lista os instalados.
+  (ambos com `pytest` e `pytest-timeout`); `ruff` e `pyright` em `.venv\Scripts\` (`ruff.exe`, `pyright.exe`; fora do `PATH`). `py -0p` lista os instalados.
 * **Testes nunca tocam produção**: o `tests/conftest.py` liga `RUMBAPY_SANDBOX=1`, `RUMBAPY_DEV=1`,
   `RUMBAPY_QUIET=1` e `RUMBAPY_HOME=<temp>` antes de importar o pacote, e sentinelas derrubam qualquer tentativa de
   carregar a DLL, mandar mensagem a janelas reais, abrir RUMBA/launcher/IE/cscript ou matar processos.
@@ -154,7 +154,7 @@ Regras de camada (verificadas por `tests/unit/test_layering.py`): `_worker/*` s�
   .venv\Scripts\python.exe   -m pytest tests -m "not live" -q
   .venv32\Scripts\python.exe -m pytest tests -m "not live" -q      (os e2e com worker 32-bit real rodam aqui)
   .venv\Scripts\ruff.exe check src tests _build --select E,F,W --ignore E501
-  pyright                                                          (basic, pythonVersion 3.12; bloqueante no CI)
+  .venv\Scripts\pyright.exe                                        (basic, pythonVersion 3.12; bloqueante no CI)
   RUMBAPY_SMOKE=1 ... pytest tests/e2e/update/test_install_smoke.py (install-smoke: zip do HEAD + GitHub falso local)
   ```
   Não há Python 3.12/3.14 locais: garanta compatibilidade com 3.12 por inspeção (o CI roda 3.12/3.13/3.14 × x64/x86).
@@ -163,9 +163,17 @@ Regras de camada (verificadas por `tests/unit/test_layering.py`): `_worker/*` s�
 * Dublês a reutilizar (não recriar): `tests/fakes/fake_ehllapi.py` (`FakeEhllapi`), `fake_user32.py`,
   `scenarios.py` (fábricas para `--fake-dll`), `fake_backend.py` (`InProcessBackend`), `rumbapy._worker.guard`
   (`GuardedDll`). Injeção: `session._set_factories(...)`, `_launcher.Launcher(user32, get_backend, ...)`.
-* Sondagem sem efeitos colaterais da DLL: `.venv32\Scripts\python.exe tools\research\probe_hllapi.py`.
-* Workers em execução ficam ociosos 30 min e saem sozinhos; para trocar o lado 32-bit durante o desenvolvimento,
-  `python -m rumbapy close <L>` ou espere — o `build_id` diferente já faz o cliente reciclar o worker sem dono.
+* `tools\research\probe_hllapi.py` **não é inofensivo**: carrega a `ehlapi32.Dll` REAL (sem `GuardedDll`) e chama
+  `WD_QuerySessions`, que pode travar dentro da DLL (A.14 l/m). Exige `RUMBAPY_LIVE=1` e a confirmação `SIM` no
+  console; só o agente principal ou o dono o roda, com autorização, nunca logo depois de fechar um emulador, e
+  **nunca** se mata o processo se ele travar (o watchdog da sonda sai com `os._exit`). `dde_list.py` faz broadcast de
+  `WM_DDE_INITIATE` e abre conversas DDE com janelas reais: mesma regra (`enum_windows.py` só enumera; ver
+  `tools/research/README.md`).
+* Workers em execução ficam ociosos 30 min e saem sozinhos. Para trocar o lado 32-bit durante o desenvolvimento,
+  feche os scripts/kernels que usam a letra (fim do lease): no próximo uso o `build_id` diferente faz o cliente
+  reciclar o worker sem dono. **Não** use `python -m rumbapy close <L>` para isso: ele só revoga o lease (`evict`)
+  e manda `WM_CLOSE` às janelas do perfil — fecha o terminal (logado) e o worker continua vivo até o idle. O `close`
+  é ação ao vivo: só o agente principal, com autorização do dono; subagentes nunca.
 
 ## Testes ao vivo (terminal de PRODUÇÃO)
 

@@ -14,6 +14,7 @@ from rumbapy import compat
 from pathlib import Path
 
 import logging
+import re
 
 import pytest
 
@@ -128,7 +129,8 @@ def test_logon_cics_only_cics_profiles():
     c, factory = client(letter="A")
     with pytest.raises(RecipeNotAvailable) as info:
         c.logon_cics(USER, PASSWORD)
-    assert info.value.message == "Comando 'logon_cics' falhou: t.cics só existe em terminais CICS (D, Z)."
+    # A.14 j: a compat troca o "t.cics" da v2 pelo método do RumbaClient
+    assert info.value.message == "Comando 'logon_cics' falhou: logon_cics só existe em terminais CICS (D, Z)."
     assert factory.calls == []                               # não abriu (nem fechou) nada
 
 
@@ -467,3 +469,97 @@ def test_lazy_attach_on_blank_cics_screen_through_the_real_launcher():
     assert c.copy_ps_to_string(1, 2, 4) == "SCOM"
     assert world.user32_calls("post_close") == [] and world.spawned == []
     c.disconnect()
+
+
+# ------------------------------------------------------------------------------------------- dicas sem a API v2 (A.14 j)
+
+class _Fields(dict):
+    NUMERIC = frozenset({"s", "n", "m", "cp", "i", "pid", "rc"})
+
+    def __missing__(self, key: str):
+        if key == "receita":
+            return "cics"
+        return 1 if key in self.NUMERIC else "D"
+
+
+def _all_error_texts():
+    import inspect
+    from rumbapy import errors
+
+    for name, cls in inspect.getmembers(errors, inspect.isclass):
+        if not issubclass(cls, errors.RumbaError):
+            continue
+        templates = cls.__dict__.get("templates") or {}
+        hints = cls.__dict__.get("hints") or {}
+        for variant, template in templates.items():
+            hint = hints.get(variant)
+            yield name, variant, cls, template.format_map(_Fields()), hint.format_map(_Fields()) if hint else None
+
+
+V2_NAMES = re.compile(r"rumbapy\.(open|attach|close)\b|(?<![\w.])t\.\w|\bSession\b(?!Replaced|Uncertain)")
+
+
+def test_every_error_text_seen_through_the_compat_has_no_v2_api():
+    """Todas as mensagens e dicas da hierarquia, vistas pelo ``RumbaClient``, não citam ``rumbapy.open``, ``t.`` nem
+    ``Session`` (o usuário da 0.1.5 não tem esses nomes)."""
+    from rumbapy import session as session_mod
+
+    leftovers = []
+    extra_hints = [compat.NOT_CONNECTED_HINT, session_mod.NO_RESPONSE_HINT, session_mod._READ_BUSY_HINT,
+                   session_mod.RESET_REFUSED_HINT, "tente t.reconnect() de novo ou rumbapy.attach('D').",
+                   "feche as Session abertas deste terminal (ou reinicie o kernel/script) e rode de novo",
+                   "use Key.TAB / escreva por linha"]
+    for name, variant, cls, message, hint in _all_error_texts():
+        exc = cls(message, hint=hint)
+        compat._prefix(exc, "acao")
+        for text in (exc.message, exc.hint or ""):
+            if V2_NAMES.search(text):
+                leftovers.append(f"{name}/{variant}: {text}")
+    for hint in extra_hints:
+        exc = compat.RumbaError("x", hint=hint)
+        compat._prefix(exc, "acao")
+        if V2_NAMES.search(exc.hint or ""):
+            leftovers.append(f"dica: {exc.hint}")
+    assert leftovers == []
+
+
+def test_compat_hints_for_terminal_not_open_in_use_and_recipes(isolated):
+    from rumbapy.errors import TerminalInUse
+
+    c, _ = client(scenarios.cics_login(USER, PASSWORD), letter="Z")
+    with pytest.raises(TerminalNotOpen) as not_open:
+        c.copy_string_to_ps(19, 19, "x")                       # Z não está no fake: o anexo preguiçoso falha
+    assert "rumbapy" not in str(not_open.value) and "logon_cics/logon_rhelp" in not_open.value.hint
+    d, _ = client()
+    with pytest.raises(RecipeNotAvailable) as recipe:
+        d.logon_rhelp(USER, PASSWORD)
+    assert recipe.value.message == "Comando 'logon_rhelp' falhou: logon_rhelp só existe em terminais IMS (A)."
+    exc = TerminalInUse.make("lease", L="D", pid=1, script="hold.py", hora="20:12:27", terminal="D")
+    compat._prefix(exc, "send_key")
+    assert exc.hint.startswith("close_terminal() deste RumbaClient") and "rumbapy" not in str(exc)
+
+
+def test_python32_not_found_hint_in_the_constructor_points_to_the_rumbaclient(monkeypatch):
+    from rumbapy.errors import Python32NotFound
+
+    def missing(explicit):
+        raise Python32NotFound.make("not_found")
+    monkeypatch.setattr(compat, "_find_python32", missing)
+    with pytest.raises(Python32NotFound) as info:
+        compat.RumbaClient("D")
+    assert r'RumbaClient("D", python32bit_path=r"C:\...\python.exe")' in info.value.hint
+    assert "rumbapy.open" not in str(info.value)
+
+
+def test_send_key_reset_unlocks_the_keyboard_fast():
+    """``X -f`` (NORESET): ``send_key('RESET')`` — a dica da compat — destrava sem esperar os 120 s."""
+    import time
+
+    fake = table_screen()
+    c, factory = client(fake)
+    c.copy_ps_to_string(1, 1, 5)
+    fake.sessions["D"].inhibited = True
+    start = time.monotonic()
+    assert c.send_key("RESET") is True
+    assert time.monotonic() - start < 1.0
+    assert fake.sessions["D"].inhibited is False and fake.sessions["D"].aid_log == []

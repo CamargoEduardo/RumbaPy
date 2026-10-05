@@ -169,7 +169,7 @@ def install_mode(*, here: str | os.PathLike[str] | None = None,
         text = f"update: AUTO-UPDATE DESLIGADO (RUMBAPY_DEV=1) versão={__version__} script={script}"
         logger.warning("%s", text)
         _bootstrap.log_line(text, "WARNING")
-        _log.notice("RumbaPy: AUTO-UPDATE DESLIGADO (RUMBAPY_DEV=1)")
+        _log.notice("RumbaPy: AUTO-UPDATE DESLIGADO (RUMBAPY_DEV=1)", force=True)   # mesmo com RUMBAPY_QUIET=1
         return ("dev", None)
     pkg = Path(here).resolve() if here is not None else Path(__file__).resolve().parent
     # A distribuição vem ANTES do ``.git``: um venv dentro de um repositório do usuário (``<proj>/.venv/Lib/
@@ -475,5 +475,22 @@ def status() -> dict[str, Any]:
     except UpdateFailed as exc:
         info["mode"] = (exc.details or {}).get("mode", "error")
         info["error"] = exc.message
-    info["last_check"] = read_state()
+    state = read_state()
+    info["last_check"] = state
+    info["last_check_other"] = checked_by_other_install(state, info["mode"], info["commit"])
     return info
+
+
+def checked_by_other_install(state: dict[str, Any] | None, mode: str | None, commit: str | None) -> bool:
+    """O ``update-state.json`` (um por usuário, não por instalação) foi gravado por OUTRA instalação?
+
+    Só para a exibição (``version``/``doctor``): o cache do update já confere ``local`` (``_cache_valid``). É desta
+    instalação se o ``local`` registrado é o commit dela, ou se ela é o resultado daquela checagem (``updated`` com
+    ``remote`` == commit); sem commit conhecido, se o registro também não tem commit e o modo bate.
+    """
+    if not isinstance(state, dict):
+        return False
+    if commit:
+        return not (state.get("local") == commit
+                    or (state.get("result") == "updated" and state.get("remote") == commit))
+    return not (state.get("local") is None and state.get("mode") == mode)

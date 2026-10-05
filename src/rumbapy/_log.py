@@ -148,14 +148,15 @@ def flush_all() -> None:
                 pass
 
 
-def notice(message: str) -> None:
+def notice(message: str, *, force: bool = False) -> None:
     """Uma linha curta em stderr (desligável com ``RUMBAPY_QUIET=1``) + INFO no log.
 
-    Nunca falha: ``sys.stderr`` ausente (pythonw.exe, Agendador de Tarefas), fechado ou sem suporte a algum caractere
-    não interrompe nada (E25).
+    ``force=True`` ignora o ``RUMBAPY_QUIET`` (só o aviso "AUTO-UPDATE DESLIGADO" do ``RUMBAPY_DEV=1``, que tem de sair
+    a cada import: H.2, E38). Nunca falha: ``sys.stderr`` ausente (pythonw.exe, Agendador de Tarefas), fechado ou sem
+    suporte a algum caractere não interrompe nada (E25).
     """
     logger.info("notice: %s", message)
-    if os.environ.get("RUMBAPY_QUIET") == "1":
+    if not force and os.environ.get("RUMBAPY_QUIET") == "1":
         return
     stream = sys.stderr
     if stream is None:

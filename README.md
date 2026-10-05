@@ -55,6 +55,12 @@ são necessários se o **seu** script os usar. Confira tudo com:
 python -m rumbapy doctor
 ```
 
+Na **primeira execução** depois da instalação (o `doctor`, o seu script ou qualquer `import rumbapy`) o RumbaPy
+reinstala uma vez a versão publicada: o endereço `.../refs/heads/master.zip` não diz qual commit foi instalado, e o
+auto-update troca a instalação por uma que diz (`.../archive/<commit>.zip`). Ela termina com "RumbaPy atualizado…
+Rode o comando de novo." (no `doctor`, código de saída 3; num script, `UpdateRequired`): rode de novo e pronto. O
+mesmo vale depois do comando de recuperação abaixo.
+
 Quem já usava a 0.1.5 não precisa fazer nada: o próprio script antigo instala a v2 na próxima execução. Depois disso,
 **reinicie todos os kernels do Jupyter e scripts que estavam abertos**. Os pacotes `pywin32`/`pywinauto` instalados
 no Python 32-bit pela 0.1.5 não são mais usados (podem ficar).
@@ -166,7 +172,8 @@ Detalhes: `help(rumbapy.open)`, `help(t)` (a `Session`), `help(rumbapy.Screen)`,
 2. **Nunca há reenvio automático de entrada.** Só leituras são repetidas (uma vez) depois de reciclar o processo
    auxiliar; numa queda da conexão HLLAPI, também uma digitação que o RUMBA recusou antes de aceitar qualquer tecla.
    Uma digitação que pode ter chegado ao RUMBA nunca é repetida.
-3. Antes de toda tecla espera-se o teclado livre; antes de toda AID, a tela estável. A AID vai **sozinha** no fim, e a
+3. Antes de toda tecla espera-se o teclado livre (exceto `Key.RESET`, a saída do `X -f`, que só espera o fim do
+   `X SYSTEM`); antes de toda AID, a tela estável. A AID vai **sozinha** no fim, e a
    espera depois dela compara com a tela tirada depois da digitação.
 4. Toda exceção de entrada diz `e.delivery`: `"none"` (nada chegou ao RUMBA), `"partial"` (parte pode ter sido
    aceita) ou `"unknown"` (não dá para saber). Com `partial`/`unknown` a `Session` fica `uncertain` e recusa nova
@@ -221,7 +228,7 @@ Toda falha é uma subclasse de `rumbapy.RumbaError` (que é `RuntimeError`); `st
 | `SessionUncertain` | a última entrada pode ter chegado ao host | confirme a tela com `wait_text`/`wait_any` ou `t.acknowledge()` |
 | `NotConnected` / `SessionStopped` | a conexão HLLAPI ou a janela do emulador sumiu | `t.reconnect()` ou `rumbapy.open` |
 | `HostConnectionLost` | a conexão com o mainframe caiu | `rumbapy.open("D")` de novo |
-| `KeyboardLocked` / `HostBusy` | teclado bloqueado / host ocupado (`X SYSTEM`) | olhe a tela antes de repetir; `X -f` → `t.press(Key.RESET)` |
+| `KeyboardLocked` / `HostBusy` | teclado bloqueado / host ocupado (`X SYSTEM`) | olhe a tela antes de repetir; `X -f` → `t.press(Key.RESET)` (destrava sem esperar o teclado livre) |
 | `Truncated` / `ProtectedField` / `InvalidPosition` / `FieldNotFound` | escrita fora do lugar | confira as coordenadas (`print(t.screen)`) |
 | `EncodingError` | caractere que o terminal não tem | troque o caractere (ou `errors="replace"`) |
 | `UndefinedKey` / `ParameterError` | tecla ou argumento inválido | a mensagem sugere o nome certo |
@@ -266,7 +273,7 @@ python -m rumbapy close D        :: fecha todas as janelas do terminal D
 ```
 
 Saída: 0 = ok, 1 = erro (mensagem em português), 2 = uso inválido, 3 = acabou de atualizar (rode de novo), 130 = Ctrl+C.
-Sem rede, o `doctor` mostra `[FALHA] Update obrigatório` e roda o resto do diagnóstico.
+Sem rede, o `doctor` mostra o item `[FALHA] Update obrigatório` no relatório, roda o resto do diagnóstico e sai com 1.
 
 ## Ajustes por variável de ambiente
 
@@ -276,7 +283,7 @@ Sem rede, o `doctor` mostra `[FALHA] Update obrigatório` e roda o resto do diag
 | `RUMBAPY_OPEN_TIMEOUT` | prazo do `open` (padrão 90 s) |
 | `RUMBAPY_TIMEOUT` | prazo padrão das esperas (padrão 30 s; também `t.timeout = 60`) |
 | `RUMBAPY_LOG_LEVEL` | `DEBUG`/`INFO`/`WARNING`/`ERROR` dos logs (diagnóstico) |
-| `RUMBAPY_QUIET=1` | silencia os avisos curtos no stderr ("RumbaPy: atualizando…", "fechando 1 janela…") |
+| `RUMBAPY_QUIET=1` | silencia os avisos curtos no stderr ("RumbaPy: atualizando…", "fechando 1 janela…"); o aviso "AUTO-UPDATE DESLIGADO" do `RUMBAPY_DEV=1` sai sempre |
 | `RUMBAPY_LAUNCH=ie` | força a abertura pelo Internet Explorer em vez do Web Launcher (sem a variável, o IE só é usado quando o launcher não está instalado) |
 
 Logs ficam em `%LOCALAPPDATA%\rumbapy\logs\` (`client-AAAAMMDD.log`, `worker-*.log`, `update.log`); nunca contêm

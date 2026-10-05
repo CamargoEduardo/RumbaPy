@@ -8,11 +8,14 @@
       AfxOleControl140 (ProContainer.ocx) > AfxWnd140 "CContainer2Ctrl - Control Container"
         AfxFrameOrView140 "Display Frame" > … > AfxOleControl140 (WdMfDsp.ocx) + filhos ocultos
 """
-import ctypes
 import ctypes.wintypes as wt
+import ctypes
 import sys
 
-user32 = ctypes.windll.user32
+# WinDLL privado (não o ctypes.windll compartilhado); títulos por InternalGetWindowText, que NÃO manda WM_GETTEXT à
+# janela de outro processo (GetWindowTextW manda e trava numa janela pendurada, A.10 l): a sonda não envia mensagens
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+user32.InternalGetWindowText.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
 ENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 GA_PARENT = 1
 
@@ -23,7 +26,7 @@ def describe(hwnd):
     cls = ctypes.create_unicode_buffer(256)
     user32.GetClassNameW(hwnd, cls, 256)
     title = ctypes.create_unicode_buffer(512)
-    user32.GetWindowTextW(hwnd, title, 512)
+    user32.InternalGetWindowText(hwnd, title, 512)
     rect = wt.RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(rect))
     size = (rect.right - rect.left, rect.bottom - rect.top)

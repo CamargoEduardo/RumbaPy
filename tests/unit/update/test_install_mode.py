@@ -35,14 +35,23 @@ def mode_of(pkg: Path) -> tuple[str, str | None]:
 
 
 def test_dev(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
-    notices: list[str] = []
-    monkeypatch.setattr(_log, "notice", notices.append)
+    notices: list[tuple[str, bool]] = []
+    monkeypatch.setattr(_log, "notice", lambda message, force=False: notices.append((message, force)))
     monkeypatch.setenv("RUMBAPY_DEV", "1")
     with caplog.at_level(logging.WARNING, logger="rumbapy._update"):
         assert _update.install_mode() == ("dev", None)
         assert _update.install_mode() == ("dev", None)
-    assert notices == ["RumbaPy: AUTO-UPDATE DESLIGADO (RUMBAPY_DEV=1)"] * 2
+    # force=True: o aviso sai mesmo com RUMBAPY_QUIET=1 (H.2, E38)
+    assert notices == [("RumbaPy: AUTO-UPDATE DESLIGADO (RUMBAPY_DEV=1)", True)] * 2
     assert "AUTO-UPDATE DESLIGADO (RUMBAPY_DEV=1) versão=2.0.0 script=" in caplog.text
+
+
+def test_dev_notice_ignores_quiet(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """``RUMBAPY_DEV=1`` esquecido + ``RUMBAPY_QUIET=1``: o auto-update desligado continua avisado no stderr."""
+    monkeypatch.setenv("RUMBAPY_DEV", "1")
+    monkeypatch.setenv("RUMBAPY_QUIET", "1")
+    assert _update.install_mode() == ("dev", None)
+    assert capsys.readouterr().err == "RumbaPy: AUTO-UPDATE DESLIGADO (RUMBAPY_DEV=1)\n"
 
 
 def test_this_checkout_without_dev_is_refused() -> None:

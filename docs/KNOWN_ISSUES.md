@@ -109,9 +109,9 @@ algo) · ⏳ aberto · ➖ não se aplica mais.
 | R1 | **A** | Sem rede/GitHub não há uso (fail-closed; sem válvula offline) | ⏳ decisão Q1/D1 |
 | R2 | M | `UpdateRequired` uma vez por deploy (tarefas agendadas falham uma execução) | ⏳ decisão Q2 (reexecução adiada para a v2.1) |
 | R3 | M | `open`/`close` de um script interrompem o lote de outro na mesma letra (`SessionReplaced`) | ✅ comportamento pedido pelo dono (Q5) |
-| R4 | M | `NORESET` muda o comportamento da 0.1.5 (AUTORESET): teclado bloqueado agora levanta `KeyboardLocked` | ✅ decisão Q4; dica de `Key.RESET` |
+| R4 | M | `NORESET` muda o comportamento da 0.1.5 (AUTORESET): teclado bloqueado agora levanta `KeyboardLocked` | ✅ decisão Q4; dica de `Key.RESET`, que funciona: `press(Key.RESET)`, `<Reset>` no início de um trecho de `send_keys` e `send_key('RESET')` mandam o `@R` sem esperar o teclado livre (só o fim do `X SYSTEM`); nenhum outro caminho manda RESET (`tests/security/test_tsafe2_aids.py`) |
 | R5 | M | Bits do OIA não validados (G1 SSCP-LU, bits de G8, insert, erro de comunicação): só "G8 ≠ 0 = bloqueado" decide | ⏳ exige provocar estados no host (proibido sem plano) |
-| R6 | M | rc 11 depois de um `os._exit` do watchdog (conexão do worker anterior presa): tolerado por 15 s na reconexão | ✅ validado ao vivo em 2026-10-04 (sonda avulsa anterior do L3b): depois de `os._exit(3)` sem `DisconnectPS`, o `ConnectPS` seguinte deu rc 0 em ~14 ms, sem rc 11. Falta rodar a variante nova `tests/live` (`--script l3b`, com `GuardedDll` e confirmação no console) |
+| R6 | M | rc 11 depois de um `os._exit` do watchdog (conexão do worker anterior presa): tolerado por 15 s na reconexão | ✅ validado ao vivo em 2026-10-04 (sonda avulsa anterior do L3b): depois de `os._exit(3)` sem `DisconnectPS`, o `ConnectPS` seguinte deu rc 0 em ~14 ms, sem rc 11. **Ressalva:** falta rodar a variante nova `tests/live` (`--script l3b`, com `GuardedDll` e confirmação no console); o `PLANO_DE_MELHORIAS.md` §8 diz o mesmo |
 | R7 | M | Breakaway do Job negado (IDE) ⇒ worker morto à força ao fechar a IDE ⇒ 1 slot HLLAPI vaza | 🟡 WARNING no log; `ClientTableFull` com instrução (logoff) |
 | R8 | M | Abas do Edge no modo IE seguram a letra | 🟡 `InstanceNotClosable` com a dica de fechá-las |
 | R9 | B | Janela TOCTOU estreita entre a conferência de `Session.close()` (`status`) e o `close_all` | 🟡 aceito (A.14 e) |
@@ -123,6 +123,7 @@ algo) · ⏳ aberto · ➖ não se aplica mais.
 | R15 | B | `UpdateRequired` "Outro processo atualizou o RumbaPy. Rode de novo." não usa a ação do contexto (Jupyter/REPL) | ⏳ variante `other_process_action` (A.14 b) |
 | R16 | B | Repositório público com a engenharia reversa da DLL | ⏳ decisão Q8/D7 (jurídico/Segurança) |
 | R17 | B | O exemplo de Jupyter da especificação (B.10) usa `t.screen.input_fields`, mas `t.screen` não traz campos (`ParameterError`); o README usa `t.snapshot(fields=True).input_fields` | ⏳ corrigir o texto da B.10 |
+| R18 | B | `attach`/`RumbaClient.connect()` (e o anexo automático da compat) num terminal com o teclado inibido por erro de operador (`X -f`) dão `LaunchTimeout` "o host não mandou a primeira tela" (`_launcher._looks_ready` exige `oia.ready`): um script novo não consegue anexar para mandar o RESET; só `open` (fecha e reabre) ou o Reset na janela | ⏳ proposta de aceitar a 1ª tela com `X -f` no `attach` (decisão do dono, E.6) |
 
 ## C. Pendências do dono antes do merge no `master`
 

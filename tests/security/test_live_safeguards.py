@@ -758,3 +758,77 @@ def test_scripts_use_the_package_launcher_and_profiles() -> None:
     assert "rumba.srv.volvo.com" not in text and "Host Access Web Launcher.exe" not in text
 
 
+
+
+# ------------------------------------------------------------------------------------------- outras sondas de tools/research
+
+WINDOW_MESSAGES = re.compile(r"\b(DdeConnect\w*|SendMessage\w*|PostMessage\w*|GetWindowText[AW]?|SendNotifyMessage\w*)"
+                             r"\s*[(.]")
+
+
+def _load_research(name: str) -> Any:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(f"research_{name}", RESEARCH / f"{name}.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_research_tools_that_touch_the_real_rumba_are_gated() -> None:
+    """Toda ferramenta de tools/research (fora das ``live_*_probe.py``) que carrega a ehlapi32.Dll ou manda mensagem a
+    janelas reais exige ``RUMBAPY_LIVE=1``, recusa o sandbox e pede a confirmação no console (``CONIN$``)."""
+    touching = []
+    for path in sorted(RESEARCH.glob("*.py")):
+        if path.name in PROBES:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if DIRECT_DLL.search(text) or WINDOW_MESSAGES.search(text):
+            touching.append(path.name)
+            for needed in ('"RUMBAPY_LIVE"', '"RUMBAPY_SANDBOX"', '"CONIN$"', "TerminateProcess(", '"taskkill'):
+                if needed in ("TerminateProcess(", '"taskkill'):
+                    assert needed not in text, (path.name, needed)
+                else:
+                    assert needed in text, (path.name, needed)
+    assert {"probe_hllapi.py", "dde_list.py"} <= set(touching)
+    assert "enum_windows.py" not in touching                # títulos por InternalGetWindowText (sem WM_GETTEXT)
+
+
+def test_probe_hllapi_refuses_without_live_and_in_the_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    probe = _load_research("probe_hllapi")
+    assert "RUMBAPY_LIVE=1" in str(probe.refusal({}))
+    assert "SANDBOX" in str(probe.refusal({"RUMBAPY_LIVE": "1", "RUMBAPY_SANDBOX": "1"}))
+    assert probe.refusal({"RUMBAPY_LIVE": "1"}) is None
+
+    def no_dll(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("a sonda não pode carregar a DLL aqui")
+    monkeypatch.setattr(probe.ctypes, "WinDLL", no_dll)
+    monkeypatch.setenv("RUMBAPY_LIVE", "1")
+    assert probe.main() == 2                                # o sandbox do conftest recusa antes de qualquer coisa
+
+
+def test_probe_hllapi_confirmation_is_typed_on_the_console() -> None:
+    import io
+
+    probe = _load_research("probe_hllapi")
+    assert probe.confirmed(lambda: None) is False
+    assert probe.confirmed(lambda: (io.StringIO("sim\n"), io.StringIO())) is False
+    assert probe.confirmed(lambda: (io.StringIO("SIM\n"), io.StringIO())) is True
+
+
+def test_probe_hllapi_watchdog_and_reset_system(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+    import time
+
+    probe = _load_research("probe_hllapi")
+    text = (RESEARCH / "probe_hllapi.py").read_text(encoding="utf-8")
+    for line in text.splitlines():                          # toda chamada WD_* passa pelo watchdog
+        if re.search(r"dll\.WD_\w+\(", line):
+            assert "lambda: dll.WD_" in line and "guarded(" in line, line
+    assert "WD_ResetSystem" in text and probe.LIMITS["WD_QuerySessions"] == 8.0
+    exited = threading.Event()
+    monkeypatch.setattr(probe.os, "_exit", lambda code: exited.set())
+    monkeypatch.setitem(probe.LIMITS, "WD_Teste", 0.05)
+    probe.guarded("WD_Teste", lambda: time.sleep(0.3))
+    assert exited.is_set()

@@ -16,6 +16,7 @@ import pytest
 HOST = "mainframe-cics.interno.example.com"
 IP = "10.20.30.40"
 PASSWORD = "SenhaSuperSecreta1"
+CHECKED_AT = 1791156157.52            # epoch, como o update-state.json grava (chave "checked_at")
 
 
 def probes(**kw: Any) -> _doctor.Probes:
@@ -25,7 +26,7 @@ def probes(**kw: Any) -> _doctor.Probes:
         is_file=lambda path: True,
         remote_sha=lambda: "a" * 40,
         update_status=lambda: {"mode": "archive", "commit": "a" * 40, "error": None,
-                               "last_check": {"at": "2026-10-04T10:00:00", "result": "up-to-date", "remote": "a" * 40}},
+                               "last_check": {"checked_at": CHECKED_AT, "result": "up-to-date", "remote": "a" * 40}},
         find_runtime=lambda: _runtime32.Runtime32(r"C:\Py313-32\python.exe", r"C:\Py313-32\python.exe", (3, 13, 2)),
         probe_worker=lambda letter: {"letter": letter, "registered": False, "alive": False},
         listener_pid=lambda port: None,
@@ -97,6 +98,45 @@ def test_github_skipped_in_sandbox_without_fake() -> None:
 def test_newer_version_published_is_warning() -> None:
     report = _doctor.collect(probes=probes(remote_sha=lambda: "c" * 40))
     assert report["GitHub"].status == "aviso" and "versão nova" in report["GitHub"].detail
+    # o ensure_latest do CLI pode ter usado o cache de 60 s: "rode o script de novo" não atualizaria; o update força
+    assert "python -m rumbapy update" in report["GitHub"].detail and "script de novo" not in report["GitHub"].detail
+
+
+def test_verbose_shows_when_the_last_check_happened() -> None:
+    from datetime import datetime
+
+    report = _doctor.collect(verbose=True, probes=probes())
+    when = datetime.fromtimestamp(CHECKED_AT).strftime("%Y-%m-%d %H:%M:%S")
+    assert f"última checagem: {when} resultado=up-to-date remoto=aaaaaaa" in report["RumbaPy"].extra
+    assert _doctor.format_checked_at(None) == "?" and _doctor.format_checked_at("ontem") == "?"
+    assert _doctor.format_checked_at(True) == "?"
+
+
+def test_verbose_flags_a_check_recorded_by_another_install() -> None:
+    status = {"mode": "unknown", "commit": None, "error": None, "last_check_other": True,
+              "last_check": {"checked_at": CHECKED_AT, "result": "updated", "remote": "e" * 40}}
+    report = _doctor.collect(verbose=True, probes=probes(update_status=lambda: status))
+    assert any("registrada por outra instalação" in line for line in report["RumbaPy"].extra)
+
+
+def test_update_failure_is_an_item_and_github_is_not_queried_again() -> None:
+    """``python -m rumbapy doctor`` sem rede (A.12 c): a falha é item do relatório, que não diz "Tudo certo.", e o GitHub
+    não é consultado uma 2ª vez (cada rodada sem rede pode levar ~26 s)."""
+    from rumbapy.errors import UpdateCheckFailed
+
+    calls: list[int] = []
+    failure = UpdateCheckFailed.make(motivo=f"info/refs: conexão recusada por {HOST}")
+    report = _doctor.collect(probes=probes(remote_sha=lambda: calls.append(1) or "a" * 40), update_failure=failure)
+    assert calls == []
+    assert not report.ok
+    item = report[_doctor.UPDATE_ITEM]
+    assert item.status == "falha" and item.detail.startswith("Não consegui verificar a versão mais recente no GitHub")
+    assert HOST not in item.detail
+    assert report["GitHub"].status == "aviso" and "não consultado de novo" in report["GitHub"].detail
+    text = str(report)
+    assert "Tudo certo." not in text and text.endswith("Há itens com FALHA: veja acima como resolver.")
+    names = [c.name for c in report.checks]
+    assert names.index("RumbaPy") < names.index(_doctor.UPDATE_ITEM) < names.index("GitHub")
 
 
 def test_broken_item_never_breaks_report() -> None:

@@ -205,3 +205,30 @@ def test_install_smoke(tmp_path: Path) -> None:
         assert bridged.returncode == 0, bridged.stdout + bridged.stderr
         out = json.loads(bridged.stdout.strip().splitlines()[-1])
         check_bridge_run(out, site=site, pkgdir=pkgdir, build=build, py32=py32)
+
+
+def test_install_from_the_readme_url_reinstalls_once_with_the_commit(tmp_path: Path) -> None:
+    """O comando do README (``.../archive/refs/heads/master.zip``) não diz o commit: modo ``unknown`` -> o 1º import
+    reinstala ``archive/<sha>.zip`` e pede para rodar de novo; o 2º já está em ``archive`` com o sha (README)."""
+    sha = head_sha()
+    data, _files = source_zip(sha)
+    home = tmp_path / "home"
+    home.mkdir()
+    python = make_venv(tmp_path / "venv", with_pip=True)
+    with FakeGitHub(sha) as gh:
+        gh.archives["refs/heads/master"] = data                     # o que o GitHub serve nesse endereço
+        gh.archives[sha] = data
+        env = pip_env(home, gh.root, RUMBAPY_TEST_PIP="pip")
+        url = f"{gh.root}/CamargoEduardo/RumbaPy/archive/refs/heads/master.zip"
+        install = subprocess.run([str(python), "-m", "pip", "install", "--force-reinstall", "--no-deps", "--no-input",
+                                  url], env=env, cwd=str(tmp_path), capture_output=True, text=True, timeout=300)
+        assert install.returncode == 0, install.stdout + install.stderr
+        first = run_python(python, "import rumbapy", env, tmp_path, timeout=300)
+        assert first.returncode == 1
+        assert "instalação sem commit conhecido; reinstalando a versão publicada" in first.stderr, first.stderr
+        assert f"({sha[:7]}). Rode o script de novo." in first.stderr, first.stderr
+        second = run_python(python, "import json, rumbapy; print(json.dumps(rumbapy._update.install_mode()))", env,
+                            tmp_path)
+        assert second.returncode == 0, second.stderr
+        assert json.loads(second.stdout.strip().splitlines()[-1]) == ["archive", sha]
+        assert any(path.endswith(f"/archive/{sha}.zip") for path in gh.paths("archive"))

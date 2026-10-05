@@ -154,6 +154,8 @@ def test_notice_quiet(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFix
     monkeypatch.setenv("RUMBAPY_QUIET", "1")
     _log.notice("não aparece")
     assert capsys.readouterr().err == ""
+    _log.notice("sempre aparece", force=True)                 # só o aviso do RUMBAPY_DEV=1 usa force (H.2, E38)
+    assert capsys.readouterr().err == "sempre aparece\n"
 
 
 class _Broken(io.StringIO):

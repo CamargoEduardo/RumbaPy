@@ -26,6 +26,7 @@ from . import waits
 
 import logging
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,27 @@ COMPAT_PHRASES: tuple[tuple[str, str], ...] = (
     ("print(t.screen)", "copy_ps_to_string"),
     ("t.press(Key.RESET)", "send_key('RESET')"),
     (" (t.wait_ready())", ""),
+    ("use Key.TAB / escreva por linha", "use send_key('TAB') / escreva por linha"),
+    ("feche as Session abertas deste terminal", "feche os RumbaClient deste terminal (close_terminal/disconnect)"),
 )
+# idem, para os textos que levam a letra do terminal ('{L}' já formatado) ou o nome da receita (A.14 j)
+COMPAT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = tuple((re.compile(old), new) for old, new in (
+    (r"use rumbapy\.open\('[A-Z]'\)\.$", "chame logon_cics/logon_rhelp deste RumbaClient (abrem o terminal)."),
+    (r"use rumbapy\.open\('[A-Z]'\) para começar de uma tela limpa\.",
+     "faça o logon de novo (logon_cics/logon_rhelp fecham e reabrem o terminal) para começar de uma tela limpa."),
+    (r"use rumbapy\.open\('[A-Z]'\), que fecha e reabre\)",
+     "use logon_cics/logon_rhelp, que fecham e reabrem o terminal)"),
+    (r"rumbapy\.open\('[A-Z]'\) ou rumbapy\.close\('[A-Z]'\) fecham e liberam\.",
+     "close_terminal() deste RumbaClient (ou logon_cics/logon_rhelp, que reabrem o terminal) fecha e libera."),
+    (r"rumbapy\.open\('[A-Z]'\) fecha todas\.",
+     "close_terminal() fecha todas (ou logon_cics/logon_rhelp, que fecham e reabrem o terminal)."),
+    (r"rumbapy\.open\('[A-Z]'\) de novo\.", "faça o logon de novo (logon_cics/logon_rhelp abrem o terminal)."),
+    (r"tente t\.reconnect\(\) de novo ou rumbapy\.attach\('[A-Z]'\)\.",
+     "chame connect() deste RumbaClient de novo."),
+    (r'rumbapy\.open\("([A-Z])", python32=', r'RumbaClient("\1", python32bit_path='),
+    (r"^t\.cics só existe", "logon_cics só existe"),
+    (r"^t\.ims só existe", "logon_rhelp só existe"),
+))
 NOT_CONNECTED_HINT = "chame connect() deste RumbaClient (ou logon_cics/logon_rhelp) de novo."
 
 SessionFactory = Callable[..., "_session.Session"]
@@ -133,6 +154,8 @@ def _compat_text(text: str) -> str:
     """Troca as referências à API v2 (``t.acknowledge()``, ``Session``...) pelos equivalentes do ``RumbaClient``."""
     for old, new in COMPAT_PHRASES:
         text = text.replace(old, new)
+    for pattern, new in COMPAT_PATTERNS:
+        text = pattern.sub(new, text)
     return text
 
 
@@ -176,7 +199,12 @@ class RumbaClient:
         self._profile = profiles.resolve(terminal_type)       # letra inválida falha na hora (UnknownTerminal)
         self.terminal_type = terminal_type
         # como na v0.1.5 (`Path(p) if p else find_python_32bit()`): qualquer valor falso ("" do config.ini) = descobrir
-        self.python_32bit: Path = _find_python32(python32bit_path or None)
+        try:
+            self.python_32bit: Path = _find_python32(python32bit_path or None)
+        except RumbaError as exc:
+            if exc.hint:
+                exc.hint = _compat_text(exc.hint)    # 'rumbapy.open("D", python32=...)' -> RumbaClient(...)
+            raise
         if not auto_update and os.environ.get("RUMBAPY_DEV") != "1":
             logger.warning("RumbaClient: auto_update=False ignorado (o RumbaPy sempre roda a última versão; "
                            "só RUMBAPY_DEV=1 desliga a atualização)")

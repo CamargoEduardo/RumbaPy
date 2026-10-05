@@ -345,7 +345,9 @@ Sem mudar arquitetura; ataca os itens críticos de `KNOWN_ISSUES.md`.
 7. ✅ Duas instâncias da mesma letra → diálogo "Short Name already in use" (requisito: fechar todas antes de abrir).
 8. ✅ (2026-10-04, v2) Roteiros L1–L6, L8, L9 e "compat" executados; achados novos (fechar um terminal derruba a
    HLLAPI dos outros; `WD_QuerySessions` que trava no encerramento; `Internet Explorer_Hidden` visível; um processo
-   de launcher por perfil) em `RUMBA_EHLLAPI.md` §11.1.1. Pendentes: L3b e L7.
+   de launcher por perfil) em `RUMBA_EHLLAPI.md` §11.1.1. L3b validado pela sonda avulsa (`ConnectPS` rc 0 em ~14 ms
+   depois de `os._exit(3)` sem `DisconnectPS`, sem rc 11; `KNOWN_ISSUES.md` R6); falta rodar a variante de
+   `tests/live` (`--script l3b`, com `GuardedDll`). Pendente: L7 (RHELP, exige autorização explícita).
 
 ## 9. Decisões que dependem de você
 
