@@ -9,6 +9,7 @@
 | O contrato exato (constantes, mensagens, protocolo, testes) | [`docs/ESPECIFICACAO_V2.md`](docs/ESPECIFICACAO_V2.md) — A.8–A.14 prevalecem |
 | O que mudou desde a 0.1.5 (inclusive na compat) | [`CHANGELOG.md`](CHANGELOG.md) |
 | O que está resolvido, o que está aberto, o que depende do dono | [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) |
+| Voltar para a 0.1.5 (branch `legacy/v0.1.5`, tags `v0.1.5`/`v2.0.0`) | [`docs/ROLLBACK.md`](docs/ROLLBACK.md) |
 | Tudo sobre a `ehlapi32.Dll` (funções, IPC, threads, rc, teclas, medições ao vivo) | [`docs/RUMBA_EHLLAPI.md`](docs/RUMBA_EHLLAPI.md) |
 | O RUMBA instalado, portal, perfis, processos/janelas, COM | [`docs/RUMBA_AMBIENTE.md`](docs/RUMBA_AMBIENTE.md) |
 | O plano original (histórico) e o que foi feito/adiado | [`docs/PLANO_DE_MELHORIAS.md`](docs/PLANO_DE_MELHORIAS.md) |

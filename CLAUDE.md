@@ -222,6 +222,7 @@ Regras de camada (verificadas por `tests/unit/test_layering.py`): `_worker/*` s�
 | `docs/RUMBA_EHLLAPI.md` | Referência da `ehlapi32.Dll`: 58 exports, assinaturas, IPC, threads, rc, mnemônicos, medições ao vivo |
 | `docs/RUMBA_AMBIENTE.md` | Instalação RUMBA, perfis do portal, processos/janelas, COM, caminhos de automação |
 | `docs/KNOWN_ISSUES.md` | Status dos problemas da 0.1.5, problemas atuais e pendências do dono |
+| `docs/ROLLBACK.md` | Como voltar para a 0.1.5 (branch `legacy/v0.1.5`, tags `v0.1.5` e `v2.0.0`) |
 | `docs/PLANO_DE_MELHORIAS.md` | Plano original (histórico) e o que foi feito/adiado |
 | `tools/research/README.md` | Como reproduzir a engenharia reversa e os roteiros ao vivo |
 | `docs/GLOSSARIO.md` | Jargão de mainframe/3270/RUMBA e termos da v2 (worker, lease, evict…) |

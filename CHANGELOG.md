@@ -3,7 +3,10 @@
 Todas as mudanças publicadas no `master` (push no `master` = atualização automática para todos os usuários).
 Formato: versão, data, e o que muda para quem usa. A versão está em `pyproject.toml` e `src/rumbapy/_version.py`.
 
-## 2.0.0 — 2026-10 (branch `dev`, ainda não publicada)
+## 2.0.0 — 2026-10-04
+
+Merge do `dev` no `master` (tag `v2.0.0`). O `master` anterior (0.1.5) está salvo na branch `legacy/v0.1.5` e na
+tag `v0.1.5`; como voltar: [`docs/ROLLBACK.md`](docs/ROLLBACK.md).
 
 Reescrita completa. **Scripts da 0.1.5 continuam funcionando sem alteração** (`RumbaClient`), com as diferenças de
 comportamento listadas em "Compatibilidade" — todas para trocar falhas silenciosas por erros claros.
